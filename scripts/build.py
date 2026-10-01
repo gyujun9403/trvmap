@@ -46,10 +46,11 @@ def main() -> int:
     OUT.write_text(out, encoding="utf-8")
     print(f"built {OUT.relative_to(ROOT)} ({OUT.stat().st_size / 1e6:.2f} MB)")
 
-    # GitHub Pages 등 정적 호스팅 배포용으로 같은 내용을 index.html 로도 출력 (연동 기능은 https 호스팅 필요)
-    index = OUT.parent / "index.html"
+    # GitHub Pages(브랜치 배포, /docs) 용으로 같은 내용을 docs/index.html 로도 출력 (연동 기능은 https 호스팅 필요)
+    index = ROOT / "docs" / "index.html"
+    index.parent.mkdir(parents=True, exist_ok=True)
     index.write_text(out, encoding="utf-8")
-    print(f"built {index.relative_to(ROOT)} (동일 내용, Pages 배포용)")
+    print(f"built {index.relative_to(ROOT)} (동일 내용, GitHub Pages /docs 배포용)")
     return 0
 
 

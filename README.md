@@ -118,7 +118,7 @@
 
 다른 기기·모바일에서 사진을 이어 보려면 아래 설정이 필요합니다. 브라우저 보안상 **`file://`로 연 페이지에서는 구글 로그인이 막히므로**, 앱을 https로 호스팅해야 합니다(개인용은 GitHub Pages 무료).
 
-1. **앱 호스팅**: `python3 scripts/build.py`로 빌드하면 `dist/index.html`이 함께 나옵니다. 이 파일을 GitHub Pages 등 https 정적 호스팅에 `index.html`로 올립니다.
+1. **앱 호스팅 (GitHub Pages)**: `python3 scripts/build.py`로 빌드하면 `docs/index.html`이 함께 나옵니다. 이 파일을 커밋·push한 뒤, 저장소 **Settings → Pages → Build and deployment**에서 **Source: Deploy from a branch**, **Branch: `main` / 폴더 `/docs`** 로 지정하고 Save 합니다. 잠시 뒤 `https://<사용자>.github.io/<저장소>/` 로 열립니다. (예: `https://gyujun9403.github.io/trvmap/`)
 2. **구글 클라우드 콘솔** (무료):
    - 프로젝트 생성.
    - **API 및 서비스 → 라이브러리 → "Google Drive API" 사용 설정(Enable)**. (이걸 빠뜨리면 로그인은 돼도 Drive 호출이 모두 403으로 막힙니다.)
@@ -153,12 +153,11 @@ photo-route-map/
 ├── scripts/
 │   ├── build.py            # src + vendor → dist 단일 HTML
 │   └── fetch_vendor.sh     # vendor/ 를 npm에서 다시 받기 (버전 올릴 때만)
-├── dist/사진동선지도.html   # 빌드 결과물 (로컬 배포용, 커밋함)
-├── dist/index.html          # 같은 내용 (https 호스팅/GitHub Pages 배포용)
+├── dist/사진동선지도.html   # 빌드 결과물 (로컬 더블클릭용, 커밋함)
 ├── tests/
 │   ├── make_test_images.py # 테스트용 JPEG/PNG/HEIC 생성 → tests/fixtures/
 │   └── e2e_test.py         # Playwright(Chromium) E2E 테스트
-├── docs/                   # 스크린샷
+├── docs/                   # 스크린샷 + index.html (GitHub Pages /docs 배포용, 커밋함)
 ├── requirements-dev.txt
 └── THIRD_PARTY_NOTICES.md
 ```
@@ -166,13 +165,13 @@ photo-route-map/
 ### 빌드
 
 ```sh
-python3 scripts/build.py      # → dist/사진동선지도.html, dist/index.html
+python3 scripts/build.py      # → dist/사진동선지도.html, docs/index.html
 ```
 
 - 표준 라이브러리만 씁니다.
 - `src/index.html`의 `/*__LEAFLET_CSS__*/`와 `<!--__VENDOR__-->` 자리에 `vendor/` 파일을 인라인합니다.
 - 라이브러리 로드 순서: Leaflet → exifr → piexifjs → JSZip → heic2any.
-- 같은 결과물을 `dist/사진동선지도.html`(로컬용)과 `dist/index.html`(Pages 배포용) 두 이름으로 냅니다.
+- 같은 결과물을 `dist/사진동선지도.html`(로컬 더블클릭용)과 `docs/index.html`(GitHub Pages `/docs` 배포용) 두 곳에 냅니다.
 - 구글 로그인(GIS)만은 인라인하지 않고 `<head>`에서 원격으로 불러옵니다(OAuth 특성상 구글 도메인에서 받아야 함). 없거나 오프라인이면 연동만 비활성화되고 나머지는 정상 동작합니다.
 - 연동을 쓰려면 `src/index.html`의 `GOOGLE_CLIENT_ID` 상수를 채워야 합니다([연동 설정](#연동-설정-구글드라이브)).
 - `src/index.html`은 라이브러리 없이 단독으로 열면 "도구를 불러오지 못했습니다"가 뜹니다. 확인은 항상 `dist/` 결과물로 하세요.
