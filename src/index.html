@@ -1,0 +1,1412 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>사진 동선 지도</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<!-- 구글 로그인(연동용). 오프라인·file:// 에선 로드 실패해도 앱은 정상 동작하고 연동만 비활성화됨 -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>/*__LEAFLET_CSS__*/</style>
+<style>
+/* Layout: 상단 도구줄 + 날짜 탭, 아래는 왼쪽 일지(묶음 카드) / 오른쪽 지도. 좁은 화면에서는 지도 위, 일지 아래. */
+:root {
+  --bg: #eef0ec;
+  --surface: #ffffff;
+  --surface-2: #f6f7f4;
+  --ink: #1b2220;
+  --muted: #5f6b66;
+  --line: #d6dbd5;
+  --accent: #1d5c87;
+  --accent-ink: #ffffff;
+  --accent-soft: #e2edf5;
+  --warn: #9a5b00;
+  --shadow: 0 1px 2px rgba(20,30,28,.06), 0 4px 16px rgba(20,30,28,.06);
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --r: 8px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111513; --surface: #181d1b; --surface-2: #1e2421; --ink: #e4e9e6; --muted: #97a39d;
+    --line: #2d3532; --accent: #74b3e0; --accent-ink: #0d1a24; --accent-soft: #1b2b37; --warn: #e2a24a;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111513; --surface: #181d1b; --surface-2: #1e2421; --ink: #e4e9e6; --muted: #97a39d;
+  --line: #2d3532; --accent: #74b3e0; --accent-ink: #0d1a24; --accent-soft: #1b2b37; --warn: #e2a24a;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font: 14px/1.55 var(--font-body);
+  display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden;
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Top bar */
+.top {
+  display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 10px; background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.brand h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.save-status { font-size: 12px; color: var(--muted); }
+.save-status.bad { color: var(--warn); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 13px; font-weight: 500;
+  white-space: nowrap; cursor: pointer; user-select: none;
+}
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn:disabled { opacity: .5; cursor: default; }
+.menu { position: relative; }
+.menu > summary { list-style: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-panel {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 1200; width: min(300px, calc(100vw - 32px));
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow);
+  padding: 8px; display: grid; gap: 4px;
+}
+.menu-panel .item {
+  display: block; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 6px; background: none; font-size: 13px; cursor: pointer;
+}
+.menu-panel .item:hover { background: var(--surface-2); }
+.menu-panel .item small { display: block; color: var(--muted); font-size: 12px; }
+.menu-panel hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+.sync-info { padding: 6px 10px 8px; font-size: 12px; color: var(--muted); line-height: 1.5; word-break: break-all; }
+#syncSummary.bad { color: var(--warn); }
+.setting { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; font-size: 13px; }
+.setting small { grid-column: 1 / -1; color: var(--muted); font-size: 12px; margin-top: -4px; }
+.setting input { width: 76px; height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); text-align: right; }
+
+.banner {
+  padding: 8px 16px; font-size: 13px; background: var(--accent-soft); color: var(--ink); border-bottom: 1px solid var(--line);
+}
+.banner b { color: var(--accent); }
+
+/* Day tabs */
+.days {
+  display: flex; gap: 6px; padding: 8px 16px; overflow-x: auto; background: var(--surface); border-bottom: 1px solid var(--line);
+  scrollbar-width: thin;
+}
+.day-tab {
+  flex: none; display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); font-size: 13px; cursor: pointer;
+}
+.day-tab .sw { width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex: none; }
+.day-tab .n { color: var(--muted); font-size: 12px; }
+.day-tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.day-tab[aria-selected="true"] .n { color: inherit; opacity: .7; }
+
+/* Main layout */
+.layout { display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); min-height: 0; }
+.panel { overflow-y: auto; border-right: 1px solid var(--line); background: var(--bg); padding-block: 14px 40px; }
+.panel-inner { display: grid; gap: 12px; padding: 0 16px; }
+.mapwrap { position: relative; min-height: 0; }
+#map { position: absolute; inset: 0; background: var(--surface-2); }
+.map-switch {
+  position: absolute; top: 10px; right: 10px; z-index: 900; display: flex; border-radius: 6px; overflow: hidden;
+  border: 1px solid rgba(0,0,0,.2); box-shadow: 0 1px 4px rgba(0,0,0,.15);
+}
+.map-switch button { border: 0; padding: 6px 10px; font-size: 12px; background: #fff; color: #1b2220; }
+.map-switch button[aria-pressed="true"] { background: #1b2220; color: #fff; }
+
+/* Day header */
+.dayhead { display: grid; gap: 8px; }
+.dayhead h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.01em; text-wrap: balance; }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.stats b { color: var(--ink); font-weight: 600; }
+.note {
+  width: 100%; min-height: 64px; resize: vertical; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); line-height: 1.55; font-size: 13.5px;
+}
+.note::placeholder, .gtitle::placeholder { color: var(--muted); opacity: .8; }
+.label { font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); }
+
+/* Group card */
+.group {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: grid; gap: 10px;
+  scroll-margin: 12px;
+}
+.group.selected { border-color: var(--c); box-shadow: 0 0 0 1px var(--c), var(--shadow); }
+.ghead { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; }
+.gnum {
+  width: 30px; height: 30px; border-radius: 50%; border: 0; background: var(--c); color: #fff; font-weight: 700; font-size: 13px;
+  display: grid; place-items: center; font-family: var(--font-mono);
+}
+.gnum.nogps { background: transparent; color: var(--muted); border: 1.5px dashed var(--muted); }
+.gmeta { min-width: 0; display: grid; gap: 2px; }
+.gtitle {
+  width: 100%; border: 0; border-bottom: 1px solid transparent; background: transparent; padding: 2px 0; font-size: 15px; font-weight: 600;
+}
+.gtitle:hover, .gtitle:focus { border-bottom-color: var(--line); outline: none; }
+.gsub { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 10px; }
+.gsub a { color: var(--accent); text-decoration: none; }
+.gsub a:hover { text-decoration: underline; }
+.small-btn {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--muted); white-space: nowrap;
+}
+.small-btn:hover { color: var(--ink); background: var(--surface-2); }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; }
+.thumb {
+  position: relative; padding: 0; border: 0; border-radius: 5px; overflow: hidden; aspect-ratio: 1; background: var(--surface-2); max-width: 100%;
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .ph { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: var(--muted); }
+.thumb .t {
+  position: absolute; left: 4px; bottom: 4px; padding: 0 4px; border-radius: 3px; background: rgba(0,0,0,.55); color: #fff; font-size: 10.5px;
+  font-family: var(--font-mono);
+}
+.thumb .dot { position: absolute; right: 4px; top: 4px; width: 9px; height: 9px; border-radius: 50%; background: #ffd24a; box-shadow: 0 0 0 1.5px rgba(0,0,0,.4); }
+.thumb .nog { position: absolute; left: 4px; top: 4px; padding: 0 4px; border-radius: 3px; background: rgba(0,0,0,.55); color: #fff; font-size: 10px; }
+.thumb:hover img { filter: brightness(1.08); }
+.pnotes { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.pnotes li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+.pnotes button { border: 0; background: none; padding: 0; color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
+.pnotes span { white-space: pre-wrap; overflow-wrap: anywhere; }
+.leg { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 0 6px 0 14px; }
+.leg::before { content: ""; width: 2px; height: 22px; background: var(--c); opacity: .6; border-radius: 2px; }
+
+/* Overview */
+.daycard {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; align-items: center; text-align: left; width: 100%;
+  padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+}
+.daycard:hover { border-color: var(--c); }
+.daycard .sw { width: 12px; height: 12px; border-radius: 50%; background: var(--c); grid-row: span 2; }
+.daycard h3 { margin: 0; font-size: 15px; }
+.daycard p { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.empty { padding: 28px 16px; text-align: center; color: var(--muted); display: grid; gap: 10px; justify-items: center; }
+.empty h2 { color: var(--ink); margin: 0; font-size: 18px; }
+
+/* Map markers */
+.gmark span {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--c); color: #fff;
+  font: 700 12px/1 "IBM Plex Mono", ui-monospace, monospace; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+.gmark.sel span { transform: scale(1.25); box-shadow: 0 0 0 3px rgba(0,0,0,.25); }
+.gmark.day span { width: auto; padding: 0 8px; border-radius: 14px; }
+.leaflet-tooltip { font-family: var(--font-body); font-size: 12px; }
+
+/* Lightbox */
+.lightbox {
+  position: fixed; inset: 0; z-index: 2000; background: rgba(8,10,9,.94); color: #eef1ef;
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+}
+.lb-stage { position: relative; min-width: 0; min-height: 0; display: grid; place-items: center; padding: 16px; }
+.lb-stage img { max-width: 100%; max-height: calc(100vh - 32px); object-fit: contain; border-radius: 3px; }
+.lb-loading { position: absolute; font-size: 13px; color: #aab5b0; }
+.lb-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 64px; border: 0; border-radius: 6px;
+  background: rgba(255,255,255,.08); color: #fff; font-size: 26px;
+}
+.lb-nav:hover { background: rgba(255,255,255,.16); }
+.lb-nav.prev { left: 12px; } .lb-nav.next { right: 12px; }
+.lb-side {
+  background: #161a18; border-left: 1px solid #2a312e; padding: calc(16px + env(safe-area-inset-top, 0px)) 16px 16px; overflow-y: auto;
+  display: grid; align-content: start; gap: 12px;
+}
+.lb-top { display: flex; justify-content: space-between; align-items: center; }
+.lb-top .mono { color: #97a39d; font-size: 12px; }
+.lb-close { border: 1px solid #333b38; background: none; color: #eef1ef; border-radius: 6px; padding: 5px 10px; font-size: 13px; }
+.lb-time { font-size: 18px; font-weight: 600; }
+.lb-file { font-size: 12px; color: #97a39d; overflow-wrap: anywhere; }
+.lb-group { font-size: 13px; padding: 8px 10px; border-radius: 6px; background: #1f2522; }
+.lb-side label { font-size: 11px; letter-spacing: .06em; color: #97a39d; font-weight: 600; }
+.lb-side textarea {
+  width: 100%; min-height: 140px; resize: vertical; padding: 10px 12px; border-radius: 6px; border: 1px solid #333b38; background: #0f1211; color: #eef1ef;
+  font-size: 14px; line-height: 1.55;
+}
+.lb-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.lb-actions button, .lb-actions a {
+  border: 1px solid #333b38; background: #1f2522; color: #eef1ef; border-radius: 6px; padding: 7px 10px; font-size: 13px; text-decoration: none;
+}
+.lb-actions button:hover, .lb-actions a:hover { background: #29302d; }
+.lb-hint { font-size: 11.5px; color: #7d8883; }
+
+/* Overlays */
+.drop {
+  position: fixed; inset: 12px; z-index: 3000; border: 2px dashed var(--accent); border-radius: 12px; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  display: grid; place-items: center; font-size: 18px; font-weight: 600; color: var(--accent); pointer-events: none;
+}
+.toast {
+  position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 3100;
+  background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow);
+  max-width: calc(100vw - 32px);
+}
+.progress { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 3050;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 12px; box-shadow: var(--shadow);
+  display: grid; gap: 6px; width: min(280px, calc(100vw - 32px));
+}
+.progress .bar { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.progress .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+
+@media (max-width: 820px) {
+  body { overflow: auto; display: block; }
+  .layout { display: flex; flex-direction: column; }
+  .mapwrap { order: -1; height: 46vh; min-height: 280px; position: sticky; top: 0; z-index: 5; }
+  .panel { overflow: visible; border-right: 0; }
+  .lightbox { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+  .lb-stage img { max-height: 58vh; }
+  .lb-side { border-left: 0; border-top: 1px solid #2a312e; max-height: 42vh; }
+  .lb-side textarea { min-height: 90px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>사진 동선 지도</h1>
+    <span class="save-status" id="saveStatus"></span>
+  </div>
+  <div class="actions">
+    <label class="btn primary" for="fileInput">사진 추가</label>
+    <input type="file" id="fileInput" multiple accept="image/*,.heic,.heif,.HEIC,.HEIF" hidden>
+    <label class="btn" for="dirInput">폴더 추가</label>
+    <input type="file" id="dirInput" webkitdirectory directory multiple hidden>
+    <details class="menu" id="menuSync" hidden>
+      <summary class="btn" id="syncSummary">연동</summary>
+      <div class="menu-panel">
+        <div class="sync-info" id="syncInfo"></div>
+        <button class="item" id="btnSignIn">구글 계정으로 로그인<small>내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 봅니다</small></button>
+        <button class="item" id="btnSyncNow" hidden>지금 동기화<small>바뀐 사진·메모를 드라이브에 올립니다</small></button>
+        <button class="item" id="btnSignOut" hidden>로그아웃<small>이 기기에서 연동을 해제합니다</small></button>
+      </div>
+    </details>
+    <details class="menu" id="menuData">
+      <summary class="btn">메모 · 내보내기</summary>
+      <div class="menu-panel">
+        <button class="item" id="btnExportNotes">메모 파일로 저장<small>.json 파일로 백업 (다른 PC·브라우저로 옮길 때)</small></button>
+        <label class="item" for="importInput">메모 파일 불러오기<small>저장해 둔 .json 파일의 메모를 합칩니다</small></label>
+        <input type="file" id="importInput" accept=".json,application/json" hidden>
+        <hr>
+        <button class="item" id="btnZipDay">이 날짜 사진 JPEG로 저장<small>선택한 날짜를 ZIP 하나로 (HEIC 등은 JPEG로 변환)</small></button>
+        <button class="item" id="btnZipAll">전체 사진 JPEG로 저장<small>날짜별 ZIP 파일로 나눠 저장</small></button>
+      </div>
+    </details>
+    <details class="menu" id="menuSettings">
+      <summary class="btn">설정</summary>
+      <div class="menu-panel">
+        <div class="setting"><label for="setDayStart">하루 시작 시각</label><input type="number" id="setDayStart" min="0" max="8" step="1"><small>이 시각 전 사진은 전날로 칩니다 (새벽 귀가 대비)</small></div>
+        <div class="setting"><label for="setDist">묶음 거리 (m)</label><input type="number" id="setDist" min="20" max="2000" step="10"><small>직전 사진과 이보다 멀면 새 묶음</small></div>
+        <div class="setting"><label for="setGap">묶음 시간 간격 (분)</label><input type="number" id="setGap" min="1" max="240" step="1"><small>직전 사진과 이보다 오래 떨어지면 새 묶음</small></div>
+        <hr>
+        <button class="item" id="btnResetBreaks">수동으로 나누고 합친 것 되돌리기<small>메모는 그대로 두고 자동 묶음으로 돌아갑니다</small></button>
+      </div>
+    </details>
+  </div>
+</header>
+<div class="banner" id="demoBanner" hidden><b>예시 화면</b> · 교토 2일 가상 데이터입니다. 사진을 추가하면 예시는 사라지고, 예시에 적은 메모는 저장되지 않습니다.</div>
+<nav class="days" id="dayTabs" role="tablist" aria-label="날짜"></nav>
+<main class="layout">
+  <aside class="panel" id="panel"></aside>
+  <div class="mapwrap">
+    <div id="map"></div>
+    <div class="map-switch" role="group" aria-label="지도 종류">
+      <button id="tileMap" aria-pressed="true">지도</button>
+      <button id="tileSat" aria-pressed="false">위성</button>
+    </div>
+  </div>
+</main>
+
+<div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="사진 크게 보기">
+  <div class="lb-stage" id="lbStage">
+    <img id="lbImg" alt="">
+    <div class="lb-loading" id="lbLoading" hidden>불러오는 중…</div>
+    <button class="lb-nav prev" id="lbPrev" aria-label="이전 사진">‹</button>
+    <button class="lb-nav next" id="lbNext" aria-label="다음 사진">›</button>
+  </div>
+  <aside class="lb-side">
+    <div class="lb-top"><span class="mono" id="lbCount"></span><button class="lb-close" id="lbClose">닫기 ✕</button></div>
+    <div class="lb-time" id="lbTime"></div>
+    <div class="lb-file" id="lbFile"></div>
+    <div class="lb-group" id="lbGroup"></div>
+    <label for="lbNote">이 사진 메모</label>
+    <textarea id="lbNote" placeholder="이 사진에 대한 메모 (자동 저장)"></textarea>
+    <div class="lb-actions">
+      <button id="lbSplit">이 사진부터 새 묶음</button>
+      <button id="lbShowMap">지도에서 보기</button>
+      <a id="lbGmaps" target="_blank" rel="noopener">구글맵</a>
+    </div>
+    <div class="lb-hint">← → 로 넘기기 · Esc 닫기 (메모 입력 중에는 동작하지 않음)</div>
+  </aside>
+</div>
+<div class="drop" id="dropHint" hidden>여기에 사진이나 폴더를 놓으세요</div>
+<div class="progress" id="progress" hidden><span id="progressText"></span><div class="bar"><i id="progressBar"></i></div></div>
+<div class="toast" id="toast" hidden></div>
+
+<!--__VENDOR__-->
+<script>
+"use strict";
+(function () {
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pad = (n) => String(n).padStart(2, "0");
+const WD = ["일", "월", "화", "수", "목", "금", "토"];
+const DAY_COLORS = ["#1d5c87", "#c2410c", "#2f7d4f", "#8a3fb0", "#b8860b", "#0f7c86", "#c0356b", "#566b1f", "#6b4f2a", "#3b4fb8"];
+const LS_KEY = "photo-route-map.v1";
+
+/* ---------- 연동(구글드라이브) 설정 ----------
+ * 연동을 쓰려면 아래 GOOGLE_CLIENT_ID 에 본인 구글 클라우드 OAuth 웹 클라이언트 ID를 넣고 다시 빌드하세요.
+ * 비워 두면 연동 기능이 숨겨지고 앱은 기존처럼 로컬 전용으로 동작합니다. (README '연동 설정' 참고)
+ */
+const GOOGLE_CLIENT_ID = "";
+const DRIVE_FOLDER_NAME = "사진동선지도";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const DRIVE_PROJECT_NAME = "project.json";
+
+/* ---------- store (메모·설정) ---------- */
+function emptyStore() {
+  return { v: 1, photoNotes: {}, groupNotes: {}, dayNotes: {}, breaks: {}, settings: { dayStartHour: 4, gapMin: 30, distM: 250 }, savedAt: null };
+}
+function mergeStore(base, s) {
+  const out = emptyStore();
+  for (const k of ["photoNotes", "groupNotes", "dayNotes", "breaks"]) out[k] = Object.assign({}, base[k], s && s[k]);
+  out.settings = Object.assign({}, base.settings, s && s.settings);
+  out.savedAt = (s && s.savedAt) || base.savedAt;
+  return out;
+}
+let storageOk = true;
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) { const s = JSON.parse(raw); if (s && s.v === 1) return mergeStore(emptyStore(), s); }
+  } catch (e) { storageOk = false; }
+  return emptyStore();
+}
+let saveTimer = null;
+function saveSoon() {
+  if (state.demo) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 350);
+}
+function saveNow() {
+  if (state.demo) return;
+  state.store.savedAt = new Date().toISOString();
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state.store)); storageOk = true; }
+  catch (e) { storageOk = false; }
+  renderSaveStatus();
+  if (isSignedIn()) { drive.dirty = true; scheduleSync(); }
+}
+function renderSaveStatus() {
+  const el = $("#saveStatus");
+  if (state.demo) { el.textContent = "예시 · 저장 안 됨"; el.className = "save-status"; return; }
+  if (!storageOk) { el.textContent = "자동 저장 안 됨 · 메모 파일로 저장하세요"; el.className = "save-status bad"; return; }
+  const t = state.store.savedAt ? new Date(state.store.savedAt) : null;
+  el.textContent = t ? `이 브라우저에 자동 저장됨 · ${pad(t.getHours())}:${pad(t.getMinutes())}` : "메모는 이 브라우저에 자동 저장됩니다";
+  el.className = "save-status";
+}
+
+/* ---------- state ---------- */
+const state = {
+  photos: [], byKey: new Map(), days: [], dayByKey: new Map(),
+  current: "all", selectedGroup: null, demo: false, store: loadStore(), lb: null,
+};
+
+/* ---------- drive sync (구글드라이브 연동) ---------- */
+const LS_CONNECTED = "photo-route-map.drive-connected";
+const drive = {
+  ready: false, connected: false, tokenClient: null, token: null, email: null,
+  folderId: null, thumbFolderId: null, projectFileId: null, loadedRev: 0,
+  status: "off", statusText: "", dirty: false,
+};
+function driveConfigured() { return !!GOOGLE_CLIENT_ID; }
+function gisLoaded() { return typeof google !== "undefined" && google.accounts && google.accounts.oauth2; }
+function isSignedIn() { return drive.connected; }
+function setSync(status, text) { drive.status = status; drive.statusText = text || ""; renderSyncStatus(); }
+
+function initDrive() {
+  if (!driveConfigured()) { setSync("disabled"); return; }
+  let tries = 0;
+  const t = setInterval(() => {
+    if (gisLoaded()) {
+      clearInterval(t);
+      drive.tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID, scope: DRIVE_SCOPE, callback: onToken,
+        error_callback: (err) => { const p = pendingToken; pendingToken = null; if (p) p.reject(new Error((err && err.type) || "로그인 취소")); },
+      });
+      drive.ready = true; setSync("signedout");
+      if (localStorage.getItem(LS_CONNECTED)) {
+        requestToken(false).then(async () => { await fetchEmail(); await pullFromDrive(); })
+          .catch(() => setSync("signedout"));
+      }
+    } else if (++tries > 40) { clearInterval(t); setSync("offline"); }
+  }, 250);
+}
+
+/* --- token --- */
+let pendingToken = null;
+function onToken(resp) {
+  const p = pendingToken; pendingToken = null;
+  if (!p) return;
+  if (resp && resp.error) { p.reject(new Error(resp.error)); return; }
+  drive.token = { access_token: resp.access_token, expiry: Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000 };
+  drive.connected = true;
+  p.resolve(resp.access_token);
+}
+function requestToken(interactive) {
+  if (pendingToken) return pendingToken.promise;
+  let resolve, reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  pendingToken = { promise, resolve, reject };
+  try { drive.tokenClient.requestAccessToken(interactive ? {} : { prompt: "" }); }
+  catch (e) { pendingToken = null; reject(e); }
+  return promise;
+}
+function ensureToken() {
+  if (drive.token && drive.token.expiry > Date.now()) return Promise.resolve(drive.token.access_token);
+  return requestToken(false);
+}
+
+/* --- REST --- */
+function rawFetch(url, opts) {
+  const headers = Object.assign({ Authorization: "Bearer " + drive.token.access_token }, opts.headers);
+  return fetch(url, Object.assign({}, opts, { headers }));
+}
+async function api(url, opts = {}) {
+  await ensureToken();
+  let resp = await rawFetch(url, opts);
+  if (resp.status === 401) { drive.token = null; await requestToken(false); resp = await rawFetch(url, opts); }
+  if (!resp.ok) throw new Error(`Drive ${resp.status}: ${(await resp.text()).slice(0, 150)}`);
+  return resp;
+}
+async function fetchEmail() {
+  try { const r = await api("https://www.googleapis.com/oauth2/v3/userinfo"); drive.email = (await r.json()).email || null; } catch (e) { /* email 범위 없으면 무시 */ }
+}
+async function findOrCreateFolder(name, parent) {
+  let q = `name='${name.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  if (parent) q += ` and '${parent}' in parents`;
+  const r = await api(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)&spaces=drive`);
+  const files = (await r.json()).files;
+  if (files && files.length) return files[0].id;
+  const meta = { name, mimeType: "application/vnd.google-apps.folder" };
+  if (parent) meta.parents = [parent];
+  const r2 = await api("https://www.googleapis.com/drive/v3/files?fields=id", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) });
+  return (await r2.json()).id;
+}
+async function ensureFolder() { if (!drive.folderId) drive.folderId = await findOrCreateFolder(DRIVE_FOLDER_NAME, null); return drive.folderId; }
+async function ensureThumbFolder() { if (!drive.thumbFolderId) drive.thumbFolderId = await findOrCreateFolder("thumbs", await ensureFolder()); return drive.thumbFolderId; }
+async function driveUpload(name, blob, mime, parentId) {
+  const meta = { name, mimeType: mime }; if (parentId) meta.parents = [parentId];
+  const boundary = "trvmap" + Math.random().toString(36).slice(2);
+  const pre = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`;
+  const body = new Blob([pre, blob, `\r\n--${boundary}--`], { type: "multipart/related; boundary=" + boundary });
+  const r = await api("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + boundary }, body });
+  return (await r.json()).id;
+}
+async function driveUpdateContent(fileId, blob, mime) {
+  const r = await api(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&fields=id`, { method: "PATCH", headers: { "Content-Type": mime }, body: blob });
+  return (await r.json()).id;
+}
+async function driveDownload(fileId) { return (await api(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`)).blob(); }
+async function loadProject() {
+  const folderId = await ensureFolder();
+  const q = `name='${DRIVE_PROJECT_NAME}' and '${folderId}' in parents and trashed=false`;
+  const r = await api(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`);
+  const files = (await r.json()).files;
+  if (!files || !files.length) return null;
+  drive.projectFileId = files[0].id;
+  return JSON.parse(await (await driveDownload(drive.projectFileId)).text());
+}
+async function saveProject(obj) {
+  const folderId = await ensureFolder();
+  const blob = new Blob([JSON.stringify(obj)], { type: "application/json" });
+  if (drive.projectFileId) await driveUpdateContent(drive.projectFileId, blob, "application/json");
+  else drive.projectFileId = await driveUpload(DRIVE_PROJECT_NAME, blob, "application/json", folderId);
+}
+
+/* --- project payload / merge --- */
+function buildProject(rev) {
+  return Object.assign({}, state.store, {
+    v: 1, rev, savedAt: new Date().toISOString(),
+    photos: state.photos.filter((p) => !p.demoUrl).map((p) => ({
+      key: p.key, name: p.name, time: p.time.toISOString(), lat: p.lat, lng: p.lng,
+      timeEstimated: !!p.timeEstimated, make: p.make || null, model: p.model || null,
+      mime: p.mime || (p.file && p.file.type) || null, size: p.size || (p.file && p.file.size) || null,
+      originalFileId: p.originalFileId || null, thumbFileId: p.thumbFileId || null,
+    })),
+  });
+}
+function photoFromRecord(rec) {
+  return {
+    key: rec.key, name: rec.name, file: null, time: new Date(rec.time), timeEstimated: !!rec.timeEstimated,
+    lat: rec.lat, lng: rec.lng, make: rec.make, model: rec.model, mime: rec.mime, size: rec.size,
+    originalFileId: rec.originalFileId, thumbFileId: rec.thumbFileId, thumbUrl: null, remote: true,
+  };
+}
+function ingestIndex(records) {
+  let added = 0;
+  for (const rec of (records || [])) {
+    const cur = state.byKey.get(rec.key);
+    if (cur) { cur.originalFileId = cur.originalFileId || rec.originalFileId; cur.thumbFileId = cur.thumbFileId || rec.thumbFileId; continue; }
+    const p = photoFromRecord(rec);
+    state.photos.push(p); state.byKey.set(p.key, p); added++;
+  }
+  return added;
+}
+
+/* --- sync orchestration --- */
+async function pullFromDrive() {
+  setSync("syncing", "불러오는 중…");
+  const proj = await loadProject();
+  if (proj && proj.v === 1) {
+    if (state.demo) exitDemo();
+    state.store = mergeStore(state.store, proj);
+    drive.loadedRev = proj.rev || 0;
+    ingestIndex(proj.photos);
+    saveNow();
+    computeDays();
+    if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
+    render();
+    queueThumbs(state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed));
+    setSync("synced");
+  } else {
+    drive.loadedRev = 0;
+    await pushToDrive(true); // 원격이 비어 있으면 현재 로컬 상태를 초기 업로드
+  }
+}
+let pushing = false, pushQueued = false, syncTimer = null;
+function scheduleSync() { if (!isSignedIn()) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => pushToDrive(), 1200); }
+async function conflictMerge() {
+  const proj = await loadProject();
+  if (proj && (proj.rev || 0) > (drive.loadedRev || 0)) {
+    state.store = mergeStore(state.store, proj);
+    const added = ingestIndex(proj.photos);
+    drive.loadedRev = proj.rev || 0;
+    saveNow(); computeDays(); render();
+    if (added) queueThumbs(state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed));
+    toast("다른 기기의 변경을 합쳤습니다");
+  }
+}
+async function pushToDrive(force) {
+  if (!isSignedIn()) return;
+  if (pushing) { pushQueued = true; return; }
+  pushing = true;
+  try {
+    setSync("syncing", "동기화 중…");
+    const folderId = await ensureFolder();
+    const pending = state.photos.filter((p) => p.file && (!p.originalFileId || !p.thumbFileId));
+    let uploaded = 0;
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      progress(`드라이브 업로드 ${i + 1}/${pending.length}`, i / pending.length);
+      if (!p.originalFileId) {
+        const mime = p.file.type || "application/octet-stream";
+        p.originalFileId = await driveUpload(p.name, p.file, mime, folderId);
+        p.mime = mime; p.size = p.file.size; uploaded++;
+      }
+      if (!p.thumbFileId && p.thumbUrl) {
+        const tb = await (await fetch(p.thumbUrl)).blob();
+        p.thumbFileId = await driveUpload(sanitize(p.key) + ".jpg", tb, "image/jpeg", await ensureThumbFolder());
+        uploaded++;
+      }
+    }
+    progress(null);
+    try { await conflictMerge(); } catch (e) { /* 원격 재확인 실패 시 우리 rev로 진행 */ }
+    if (force || uploaded > 0 || drive.dirty) {
+      const rev = (drive.loadedRev || 0) + 1;
+      await saveProject(buildProject(rev));
+      drive.loadedRev = rev; drive.dirty = false;
+    }
+    setSync("synced");
+  } catch (e) {
+    progress(null); setSync("error", e.message); toast("드라이브 동기화 실패: " + (e.message || e), 5000);
+  } finally {
+    pushing = false;
+    if (pushQueued) { pushQueued = false; pushToDrive(); }
+  }
+}
+function sanitize(s) { return String(s).replace(/[^\w.-]+/g, "_"); }
+
+async function signIn() {
+  if (!drive.ready) { toast("연동을 사용할 수 없습니다 (오프라인이거나 로그인 도구를 못 불러왔습니다)"); return; }
+  setSync("signingin");
+  try { await requestToken(true); localStorage.setItem(LS_CONNECTED, "1"); await fetchEmail(); await pullFromDrive(); }
+  catch (e) { setSync("signedout"); toast("연동 로그인에 실패했습니다: " + (e.message || e)); }
+}
+function signOut() {
+  if (drive.token) { try { google.accounts.oauth2.revoke(drive.token.access_token, () => {}); } catch (e) {} }
+  drive.token = null; drive.connected = false; drive.email = null;
+  drive.folderId = drive.thumbFolderId = drive.projectFileId = null; drive.loadedRev = 0; drive.dirty = false;
+  localStorage.removeItem(LS_CONNECTED);
+  setSync("signedout");
+  toast("연동을 해제했습니다. 다른 기기에서 넣은 사진을 다시 보려면 새로고침 후 로그인하세요");
+}
+
+function renderSyncStatus() {
+  const menu = $("#menuSync"); if (!menu) return;
+  if (drive.status === "disabled") { menu.hidden = true; return; }
+  menu.hidden = false;
+  const sum = $("#syncSummary"), info = $("#syncInfo");
+  const inBtn = $("#btnSignIn"), nowBtn = $("#btnSyncNow"), outBtn = $("#btnSignOut");
+  const labels = { offline: "연동 준비 안 됨", signedout: "연동", signingin: "로그인 중…", syncing: "동기화 중…", synced: "동기화됨", error: "동기화 오류" };
+  sum.textContent = labels[drive.status] || "연동";
+  sum.classList.toggle("bad", drive.status === "error");
+  const signedIn = isSignedIn();
+  inBtn.hidden = signedIn; nowBtn.hidden = !signedIn; outBtn.hidden = !signedIn;
+  let t = "";
+  if (drive.status === "offline") t = "로그인 도구를 불러오지 못했습니다. 인터넷 연결과 https 접속을 확인하세요.";
+  else if (!signedIn) t = "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
+  else t = (drive.email ? drive.email + " · " : "") + (drive.status === "syncing" ? (drive.statusText || "동기화 중…") : drive.status === "error" ? ("오류: " + drive.statusText) : "동기화됨");
+  info.textContent = t;
+}
+
+/* ---------- utils ---------- */
+function fmtStamp(d) { return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
+function fmtTime(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function dayKeyOf(d) {
+  const t = new Date(d.getTime() - state.store.settings.dayStartHour * 3600e3);
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+}
+function dayLabel(key, short) {
+  const [y, m, d] = key.split("-").map(Number);
+  const w = WD[new Date(y, m - 1, d).getDay()];
+  return short ? `${m}/${d} (${w})` : `${y}년 ${m}월 ${d}일 (${w})`;
+}
+function hav(a, b) {
+  const R = 6371e3, r = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * r, dLng = (b[1] - a[1]) * r;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+function fmtDist(m) { return m < 1000 ? `${Math.round(m / 10) * 10}m` : `${(m / 1000).toFixed(1)}km`; }
+function fmtDur(ms) { const m = Math.round(ms / 60000); return m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`; }
+function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+function gmapsUrl(lat, lng) { return `https://www.google.com/maps/search/?api=1&query=${lat.toFixed(6)},${lng.toFixed(6)}`; }
+const hasGps = (p) => p.lat != null && p.lng != null;
+const isJpegFile = (f) => f.type === "image/jpeg" || /\.jpe?g$/i.test(f.name);
+const isHeicFile = (f) => /image\/hei[cf]/.test(f.type) || /\.hei[cf]$/i.test(f.name);
+// 사진 객체(로컬 File 없는 원격 사진 포함)의 형식을 이름/mime 메타로 판정
+const isJpegPhoto = (p) => (p.mime === "image/jpeg") || /\.jpe?g$/i.test(p.name || "");
+const isHeicPhoto = (p) => (p.mime && /image\/hei[cf]/.test(p.mime)) || /\.hei[cf]$/i.test(p.name || "");
+const isImageFile = (f) => /^image\//.test(f.type) || /\.(hei[cf]|jpe?g|png|webp|tiff?|avif)$/i.test(f.name);
+
+let toastTimer = null;
+function toast(msg, ms = 3200) {
+  const el = $("#toast"); el.textContent = msg; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, ms);
+}
+function progress(text, frac) {
+  const el = $("#progress");
+  if (text == null) { el.hidden = true; return; }
+  el.hidden = false; $("#progressText").textContent = text; $("#progressBar").style.width = `${Math.round((frac || 0) * 100)}%`;
+}
+function download(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+/* ---------- grouping ---------- */
+function computeDays() {
+  const s = state.store.settings;
+  const map = new Map();
+  for (const p of state.photos) {
+    p.dayKey = dayKeyOf(p.time);
+    if (!map.has(p.dayKey)) map.set(p.dayKey, []);
+    map.get(p.dayKey).push(p);
+  }
+  const keys = [...map.keys()].sort();
+  state.days = keys.map((key, i) => {
+    const photos = map.get(key).sort((a, b) => a.time - b.time || a.name.localeCompare(b.name));
+    const groups = [];
+    let cur = null, lastGps = null;
+    for (const p of photos) {
+      let newGroup = !cur;
+      if (cur) {
+        const prev = cur.photos[cur.photos.length - 1];
+        const gap = p.time - prev.time;
+        let auto = gap > s.gapMin * 60000;
+        if (!auto && hasGps(p) && lastGps) auto = hav([lastGps.lat, lastGps.lng], [p.lat, p.lng]) > s.distM;
+        const o = state.store.breaks[p.key];
+        newGroup = o === true ? true : o === false ? false : auto;
+      }
+      if (newGroup) { cur = { key: p.key, photos: [], idx: groups.length }; groups.push(cur); lastGps = null; }
+      cur.photos.push(p); p.groupKey = cur.key;
+      if (hasGps(p)) lastGps = p;
+    }
+    let dist = 0, prevPt = null, gpsCount = 0;
+    for (const p of photos) if (hasGps(p)) { gpsCount++; const pt = [p.lat, p.lng]; if (prevPt) dist += hav(prevPt, pt); prevPt = pt; }
+    for (const g of groups) {
+      const gp = g.photos.filter(hasGps);
+      g.center = gp.length ? [gp.reduce((a, p) => a + p.lat, 0) / gp.length, gp.reduce((a, p) => a + p.lng, 0) / gp.length] : null;
+      g.start = g.photos[0].time; g.end = g.photos[g.photos.length - 1].time;
+    }
+    return { key, photos, groups, color: DAY_COLORS[i % DAY_COLORS.length], index: i, dist, gpsCount };
+  });
+  state.dayByKey = new Map(state.days.map((d) => [d.key, d]));
+  if (state.current !== "all" && !state.dayByKey.has(state.current)) state.current = "all";
+}
+function findGroup(dayKey, gkey) { const d = state.dayByKey.get(dayKey); return d && d.groups.find((g) => g.key === gkey); }
+function groupTitle(gkey) { const n = state.store.groupNotes[gkey]; return (n && n.title) || ""; }
+
+/* ---------- rendering ---------- */
+function render(opts = {}) {
+  renderTabs(); renderPanel(opts); renderMap(opts.fit !== false); renderSaveStatus();
+}
+function renderTabs() {
+  const el = $("#dayTabs");
+  const total = state.photos.length;
+  let h = `<button class="day-tab" role="tab" aria-selected="${state.current === "all"}" data-day="all">전체 <span class="n">${total}장</span></button>`;
+  for (const d of state.days) {
+    h += `<button class="day-tab" role="tab" aria-selected="${state.current === d.key}" data-day="${d.key}" style="--c:${d.color}"><span class="sw"></span>${esc(dayLabel(d.key, true))} <span class="n">${d.photos.length}장</span></button>`;
+  }
+  el.innerHTML = h;
+  const sel = el.querySelector('[aria-selected="true"]'); if (sel) sel.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+function thumbHtml(p) {
+  const note = state.store.photoNotes[p.key];
+  return `<button class="thumb" data-photo="${esc(p.key)}" title="${esc(p.name)}">` +
+    (p.thumbUrl ? `<img src="${p.thumbUrl}" alt="" loading="lazy">` : `<span class="ph">${p.thumbFailed ? "미리보기 불가" : "변환 중"}</span>`) +
+    `<span class="t">${fmtTime(p.time)}</span>` + (note ? `<span class="dot" aria-label="메모 있음"></span>` : "") +
+    (hasGps(p) ? "" : `<span class="nog">위치 없음</span>`) + `</button>`;
+}
+function renderPanel(opts = {}) {
+  const panel = $("#panel");
+  const keepScroll = opts.keepScroll ? (window.innerWidth <= 820 ? window.scrollY : panel.scrollTop) : null;
+  if (!state.photos.length) {
+    panel.innerHTML = `<div class="panel-inner"><div class="empty"><h2>여행 사진을 추가하세요</h2><p>사진의 촬영 시각과 GPS 위치를 읽어 날짜별 동선을 그립니다.<br>사진은 이 브라우저 안에서만 처리됩니다. (연동을 켜면 내 구글드라이브에만 저장됩니다.)</p><label class="btn primary" for="fileInput">사진 추가</label></div></div>`;
+    return;
+  }
+  let h = `<div class="panel-inner">`;
+  if (state.current === "all") {
+    const first = state.days[0], last = state.days[state.days.length - 1];
+    const gps = state.photos.filter(hasGps).length;
+    h += `<div class="dayhead"><h2>${esc(dayLabel(first.key))}${state.days.length > 1 ? ` – ${esc(dayLabel(last.key, true))}` : ""}</h2>
+      <div class="stats"><span><b>${state.days.length}</b>일</span><span>사진 <b>${state.photos.length}</b>장</span><span>위치 있는 사진 <b>${gps}</b>장</span></div></div>`;
+    for (const d of state.days) {
+      const titles = d.groups.map((g) => groupTitle(g.key)).filter(Boolean);
+      const dn = state.store.dayNotes[d.key];
+      const sub = titles.length ? titles.join(" → ") : `${d.groups.length}개 묶음`;
+      h += `<button class="daycard" data-day="${d.key}" style="--c:${d.color}"><span class="sw"></span><h3>${esc(dayLabel(d.key))}</h3>
+        <p>${fmtTime(d.photos[0].time)}–${fmtTime(d.photos[d.photos.length - 1].time)} · ${d.photos.length}장 · 사진 사이 직선거리 ${fmtDist(d.dist)}<br>${esc(sub)}${dn ? `<br>${esc(dn.slice(0, 80))}${dn.length > 80 ? "…" : ""}` : ""}</p></button>`;
+    }
+  } else {
+    const d = state.dayByKey.get(state.current);
+    h += `<div class="dayhead" style="--c:${d.color}"><h2>${esc(dayLabel(d.key))}</h2>
+      <div class="stats"><span class="mono"><b>${fmtTime(d.photos[0].time)}–${fmtTime(d.photos[d.photos.length - 1].time)}</b></span><span>사진 <b>${d.photos.length}</b>장</span><span>묶음 <b>${d.groups.length}</b>개</span><span>사진 사이 직선거리 <b>${fmtDist(d.dist)}</b></span>${d.gpsCount < d.photos.length ? `<span>위치 없음 <b>${d.photos.length - d.gpsCount}</b>장</span>` : ""}</div>
+      <label class="label" for="dayNote">이날 메모</label>
+      <textarea class="note" id="dayNote" data-daynote="${d.key}" placeholder="하루 전체에 대한 메모 (자동 저장)">${esc(state.store.dayNotes[d.key] || "")}</textarea></div>`;
+    let prev = null;
+    for (const g of d.groups) {
+      if (prev) {
+        const gap = g.start - prev.end;
+        const dist = prev.center && g.center ? hav(prev.center, g.center) : null;
+        h += `<div class="leg" style="--c:${d.color}">이동 ${dist != null ? `직선 ${fmtDist(dist)} · ` : ""}${fmtDur(gap)} 뒤</div>`;
+      }
+      const gn = state.store.groupNotes[g.key] || {};
+      const pn = g.photos.filter((p) => state.store.photoNotes[p.key]);
+      const id = hash(g.key);
+      h += `<section class="group${state.selectedGroup === g.key ? " selected" : ""}" data-group="${esc(g.key)}" style="--c:${d.color}">
+        <div class="ghead">
+          <button class="gnum${g.center ? "" : " nogps"}" data-act="focus" title="${g.center ? "지도에서 보기" : "위치 정보 없음"}">${g.idx + 1}</button>
+          <div class="gmeta">
+            <input class="gtitle" id="gt-${id}" data-gtitle="${esc(g.key)}" value="${esc(gn.title || "")}" placeholder="장소 이름 입력" aria-label="묶음 ${g.idx + 1} 장소 이름">
+            <div class="gsub"><span class="mono">${fmtTime(g.start)}${g.end - g.start >= 60000 ? `–${fmtTime(g.end)}` : ""}</span><span>${g.photos.length}장</span>${g.center ? `<a href="${gmapsUrl(g.center[0], g.center[1])}" target="_blank" rel="noopener">구글맵에서 열기</a>` : "<span>위치 없음</span>"}</div>
+          </div>
+          ${g.idx > 0 ? `<button class="small-btn" data-act="merge" title="바로 앞 묶음과 하나로 합칩니다">앞 묶음과 합치기</button>` : "<span></span>"}
+        </div>
+        <div class="thumbs">${g.photos.map(thumbHtml).join("")}</div>
+        ${pn.length ? `<ul class="pnotes">${pn.map((p) => `<li><button data-photo="${esc(p.key)}">${fmtTime(p.time)}</button><span>${esc(state.store.photoNotes[p.key])}</span></li>`).join("")}</ul>` : ""}
+        <textarea class="note" id="gn-${id}" data-gnote="${esc(g.key)}" placeholder="이 묶음에 대한 메모 (자동 저장)" aria-label="묶음 ${g.idx + 1} 메모">${esc(gn.text || "")}</textarea>
+      </section>`;
+      prev = g;
+    }
+  }
+  h += `</div>`;
+  panel.innerHTML = h;
+  if (keepScroll != null) { if (window.innerWidth <= 820) window.scrollTo(0, keepScroll); else panel.scrollTop = keepScroll; }
+  else if (!opts.keepScroll) { panel.scrollTop = 0; }
+}
+
+/* ---------- map ---------- */
+let map, lg, tiles = {}, markerByGroup = new Map();
+function initMap() {
+  map = L.map("map", { zoomControl: true, preferCanvas: false }).setView([37.5665, 126.978], 11);
+  tiles.map = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, attribution: "Tiles &copy; Esri &mdash; Esri, HERE, Garmin, USGS, Intermap, INCREMENT P, NRCan, Esri Japan, METI, Esri China (Hong Kong), Esri Korea, Esri (Thailand), NGCC, &copy; OpenStreetMap contributors, and the GIS User Community",
+  });
+  tiles.sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, attribution: "Tiles &copy; Esri, Maxar, Earthstar Geographics",
+  });
+  tiles.map.addTo(map);
+  lg = L.layerGroup().addTo(map);
+  $("#tileMap").onclick = () => setTiles("map");
+  $("#tileSat").onclick = () => setTiles("sat");
+}
+function setTiles(which) {
+  for (const k of ["map", "sat"]) { if (k === which) tiles[k].addTo(map); else map.removeLayer(tiles[k]); }
+  $("#tileMap").setAttribute("aria-pressed", which === "map"); $("#tileSat").setAttribute("aria-pressed", which === "sat");
+}
+function markerIcon(color, text, extra) {
+  return L.divIcon({ className: `gmark${extra ? " " + extra : ""}`, html: `<span style="--c:${color}">${esc(text)}</span>`, iconSize: null, iconAnchor: [14, 14] });
+}
+function renderMap(fit) {
+  if (!map) return;
+  lg.clearLayers(); markerByGroup.clear();
+  const bounds = [];
+  const days = state.current === "all" ? state.days : [state.dayByKey.get(state.current)].filter(Boolean);
+  for (const d of days) {
+    const pts = d.photos.filter(hasGps).map((p) => [p.lat, p.lng]);
+    bounds.push(...pts);
+    if (pts.length > 1) L.polyline(pts, { color: d.color, weight: state.current === "all" ? 3 : 4, opacity: 0.85, lineJoin: "round" }).addTo(lg);
+    if (state.current === "all") {
+      if (pts.length) {
+        const m = L.marker(pts[0], { icon: markerIcon(d.color, `${d.index + 1}일차`, "day") }).addTo(lg);
+        m.bindTooltip(dayLabel(d.key), { direction: "top", offset: [0, -14] });
+        m.on("click", () => selectDay(d.key));
+      }
+      continue;
+    }
+    for (const p of d.photos) {
+      if (!hasGps(p)) continue;
+      L.circleMarker([p.lat, p.lng], { radius: 4, color: d.color, weight: 2, fillColor: "#fff", fillOpacity: 1 })
+        .bindTooltip(fmtTime(p.time), { direction: "top" }).on("click", () => openLightbox(p.key)).addTo(lg);
+    }
+    for (const g of d.groups) {
+      if (!g.center) continue;
+      const m = L.marker(g.center, { icon: markerIcon(d.color, g.idx + 1, state.selectedGroup === g.key ? "sel" : ""), zIndexOffset: 500 }).addTo(lg);
+      m.bindTooltip(groupTitle(g.key) || `${fmtTime(g.start)} · ${g.photos.length}장`, { direction: "top", offset: [0, -14] });
+      m.on("click", () => selectGroup(g.key, { fly: false, scroll: true }));
+      markerByGroup.set(g.key, m);
+    }
+  }
+  if (fit && bounds.length) {
+    map.invalidateSize(false);
+    if (bounds.length === 1) map.setView(bounds[0], 16);
+    else map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+  }
+}
+function selectDay(key) {
+  state.current = key; state.selectedGroup = null;
+  render();
+}
+function selectGroup(gkey, { fly = true, scroll = true } = {}) {
+  state.selectedGroup = gkey;
+  document.querySelectorAll(".group.selected").forEach((el) => el.classList.remove("selected"));
+  const card = document.querySelector(`.group[data-group="${CSS.escape(gkey)}"]`);
+  if (card) { card.classList.add("selected"); if (scroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+  const d = state.dayByKey.get(state.current); const g = d && d.groups.find((x) => x.key === gkey);
+  markerByGroup.forEach((m, k) => { const el = m.getElement(); if (el) el.classList.toggle("sel", k === gkey); });
+  const m = markerByGroup.get(gkey);
+  if (g && g.center && fly) { map.flyTo(g.center, Math.max(map.getZoom(), 16), { duration: 0.6 }); }
+  if (m) m.openTooltip();
+}
+
+/* ---------- images: thumbnails / full view / JPEG ---------- */
+const fullCache = new Map(); // key -> objectURL (HEIC 변환본), 최근 8개만
+function cacheFull(key, url) {
+  fullCache.set(key, url);
+  while (fullCache.size > 8) { const [k, u] = fullCache.entries().next().value; URL.revokeObjectURL(u); fullCache.delete(k); }
+}
+async function heicToJpegBlob(file, quality) {
+  if (typeof heic2any !== "function") throw new Error("HEIC 변환기를 불러오지 못했습니다");
+  const out = await heic2any({ blob: file, toType: "image/jpeg", quality });
+  return Array.isArray(out) ? out[0] : out;
+}
+// 사진의 원본 바이트: 로컬은 File, 원격(다른 기기서 넣은 사진)은 드라이브에서 내려받음
+async function sourceBlob(p) {
+  if (p.file) return p.file;
+  if (p.originalFileId) return await driveDownload(p.originalFileId);
+  throw new Error("원본을 찾을 수 없습니다");
+}
+// 브라우저가 바로 그릴 수 있는 Blob을 돌려줌 (HEIC는 필요할 때만 변환)
+async function decodableBlob(p, quality = 0.9) {
+  const src = await sourceBlob(p);
+  if (p.nativeOk === true) return src;
+  if (p.nativeOk == null) {
+    try { const bm = await createImageBitmap(src); bm.close && bm.close(); p.nativeOk = true; return src; }
+    catch (e) { p.nativeOk = false; }
+  }
+  if (isHeicPhoto(p) || isHeicFile(src)) {
+    const cached = fullCache.get(p.key);
+    if (cached) return await (await fetch(cached)).blob();
+    const blob = await heicToJpegBlob(src, quality);
+    cacheFull(p.key, URL.createObjectURL(blob));
+    return blob;
+  }
+  throw new Error("이 브라우저에서 열 수 없는 이미지 형식입니다");
+}
+async function makeThumb(p) {
+  const blob = await decodableBlob(p);
+  const bm = await createImageBitmap(blob);
+  const S = 360, sc = Math.min(1, S / Math.min(bm.width, bm.height));
+  const c = document.createElement("canvas"); c.width = Math.round(bm.width * sc); c.height = Math.round(bm.height * sc);
+  c.getContext("2d").drawImage(bm, 0, 0, c.width, c.height); bm.close && bm.close();
+  const tb = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.8));
+  p.thumbUrl = URL.createObjectURL(tb);
+}
+// 원격 사진은 드라이브에 저장된 썸네일(360px JPEG)을 그대로 받아 쓰고, 로컬 사진은 즉석 생성
+async function loadThumb(p) {
+  if (!p.file && p.thumbFileId) { p.thumbUrl = URL.createObjectURL(await driveDownload(p.thumbFileId)); return; }
+  await makeThumb(p);
+}
+let thumbQueue = [], thumbRunning = 0, thumbDone = 0, thumbTotal = 0;
+function queueThumbs(list) {
+  thumbQueue.push(...list); thumbTotal += list.length;
+  for (let i = 0; i < 2; i++) pumpThumbs();
+}
+async function pumpThumbs() {
+  if (thumbRunning >= 2) return;
+  const p = thumbQueue.shift();
+  if (!p) { if (!thumbRunning) { progress(null); thumbDone = thumbTotal = 0; if (isSignedIn()) scheduleSync(); } return; }
+  thumbRunning++;
+  try { await loadThumb(p); } catch (e) { p.thumbFailed = true; console.warn(p.name, e); }
+  thumbRunning--; thumbDone++;
+  progress(`미리보기 만드는 중 ${thumbDone}/${thumbTotal}`, thumbDone / thumbTotal);
+  document.querySelectorAll(`.thumb[data-photo="${CSS.escape(p.key)}"]`).forEach((el) => { el.outerHTML = thumbHtml(p); });
+  pumpThumbs();
+}
+async function fullUrl(p) {
+  if (p.demoUrl) return p.demoUrl;
+  if (fullCache.has(p.key)) return fullCache.get(p.key);
+  const blob = await decodableBlob(p, 0.92);
+  if (fullCache.has(p.key)) return fullCache.get(p.key); // HEIC 변환본은 decodableBlob 내부에서 캐시됨
+  const u = URL.createObjectURL(blob); cacheFull(p.key, u); return u;
+}
+function toExifDate(d) { return `${d.getFullYear()}:${pad(d.getMonth() + 1)}:${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+function dmsRational(v) {
+  v = Math.abs(v); const d = Math.floor(v), mf = (v - d) * 60, m = Math.floor(mf), s = Math.round((mf - m) * 60 * 10000);
+  return [[d, 1], [m, 1], [s, 10000]];
+}
+function blobToDataURL(b) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); }); }
+function dataURLToBlob(u) { const bin = atob(u.split(",")[1]); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return new Blob([a], { type: "image/jpeg" }); }
+async function toJpegWithExif(p, src) {
+  if (!src) src = await sourceBlob(p);
+  let jpeg;
+  if (isHeicPhoto(p) && p.nativeOk !== true) jpeg = await heicToJpegBlob(src, 0.92);
+  else {
+    const bm = await createImageBitmap(src);
+    const c = document.createElement("canvas"); c.width = bm.width; c.height = bm.height;
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(bm, 0, 0); bm.close && bm.close();
+    jpeg = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92));
+  }
+  if (typeof piexif === "undefined") return jpeg;
+  try {
+    const zeroth = { [piexif.ImageIFD.Orientation]: 1, [piexif.ImageIFD.Software]: "photo-route-map" };
+    if (p.make) zeroth[piexif.ImageIFD.Make] = p.make;
+    if (p.model) zeroth[piexif.ImageIFD.Model] = p.model;
+    const exif = {};
+    if (!p.timeEstimated) { exif[piexif.ExifIFD.DateTimeOriginal] = toExifDate(p.time); exif[piexif.ExifIFD.DateTimeDigitized] = toExifDate(p.time); }
+    const gps = {};
+    if (hasGps(p)) {
+      gps[piexif.GPSIFD.GPSLatitudeRef] = p.lat >= 0 ? "N" : "S"; gps[piexif.GPSIFD.GPSLatitude] = dmsRational(p.lat);
+      gps[piexif.GPSIFD.GPSLongitudeRef] = p.lng >= 0 ? "E" : "W"; gps[piexif.GPSIFD.GPSLongitude] = dmsRational(p.lng);
+    }
+    const bytes = piexif.dump({ "0th": zeroth, Exif: exif, GPS: gps });
+    return dataURLToBlob(piexif.insert(bytes, await blobToDataURL(jpeg)));
+  } catch (e) { console.warn("EXIF 기록 실패", p.name, e); return jpeg; }
+}
+async function exportZip(day, label) {
+  if (typeof JSZip === "undefined") { toast("ZIP 도구를 불러오지 못했습니다"); return; }
+  const zip = new JSZip(); const used = new Set(); let converted = 0, failed = 0;
+  for (let i = 0; i < day.photos.length; i++) {
+    const p = day.photos[i];
+    progress(`${label} JPEG 준비 중 ${i + 1}/${day.photos.length}`, i / day.photos.length);
+    const base = p.name.replace(/\.[^.]+$/, "");
+    const t = p.time;
+    let name = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}_${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}_${base}.jpg`;
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = name.replace(/(_\d+)?\.jpg$/, `_${n}.jpg`);
+    used.add(name.toLowerCase());
+    try {
+      const src = await sourceBlob(p);
+      if (isJpegPhoto(p) || isJpegFile(src)) zip.file(name, src);
+      else { zip.file(name, await toJpegWithExif(p, src)); converted++; }
+    } catch (e) { failed++; console.warn(p.name, e); }
+  }
+  progress(`${label} ZIP 묶는 중…`, 1);
+  const out = await zip.generateAsync({ type: "blob", compression: "STORE" });
+  download(out, `사진동선_${day.key}.zip`);
+  return { converted, failed };
+}
+
+/* ---------- file ingest ---------- */
+async function readMeta(f) {
+  let out = null;
+  try {
+    out = await exifr.parse(f, { tiff: true, exif: true, gps: true, ifd1: false, xmp: false, icc: false, iptc: false, jfif: false, ihdr: false });
+  } catch (e) { /* EXIF 없음 */ }
+  const weak = !out || (!out.DateTimeOriginal && !Number.isFinite(out.latitude));
+  if (weak && !isJpegFile(f)) {
+    // 일부 HEIC(삼성·libheif 등)는 exifr가 컨테이너를 못 읽는 경우가 있어, 파일 안의 "Exif\0\0" + TIFF 블록을 직접 찾아 다시 읽음
+    try {
+      const u8 = new Uint8Array(await f.arrayBuffer());
+      for (let i = u8.indexOf(0x45); i >= 0 && i < u8.length - 10; i = u8.indexOf(0x45, i + 1)) {
+        if (u8[i + 1] === 0x78 && u8[i + 2] === 0x69 && u8[i + 3] === 0x66 && u8[i + 4] === 0 && u8[i + 5] === 0 &&
+            ((u8[i + 6] === 0x4d && u8[i + 7] === 0x4d) || (u8[i + 6] === 0x49 && u8[i + 7] === 0x49))) {
+          const o2 = await exifr.parse(u8.slice(i + 6, i + 6 + 262144), { tiff: true, exif: true, gps: true, ifd1: false });
+          if (o2) out = Object.assign({}, out, o2);
+          break;
+        }
+      }
+    } catch (e) { /* 그래도 없으면 파일 시각 사용 */ }
+  }
+  let time = out && (out.DateTimeOriginal || out.CreateDate || out.DateTime);
+  let est = false;
+  if (!(time instanceof Date) || isNaN(time)) { time = new Date(f.lastModified); est = true; }
+  let lat = out && out.latitude, lng = out && out.longitude;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) { lat = null; lng = null; }
+  return { time, est, lat, lng, make: out && out.Make, model: out && out.Model };
+}
+async function addFiles(fileList) {
+  const files = [...fileList].filter(isImageFile);
+  if (!files.length) { toast("사진 파일을 찾지 못했습니다"); return; }
+  if (state.demo) exitDemo();
+  const added = [];
+  let noTime = 0, noGps = 0, dup = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (i % 5 === 0) progress(`사진 정보 읽는 중 ${i + 1}/${files.length}`, i / files.length);
+    const m = await readMeta(f);
+    const key = `${f.name}|${fmtStamp(m.time)}`;
+    if (state.byKey.has(key)) { dup++; continue; }
+    const p = { key, name: f.name, file: f, time: m.time, timeEstimated: m.est, lat: m.lat, lng: m.lng, make: m.make, model: m.model, mime: f.type || null, size: f.size, thumbUrl: null };
+    if (m.est) noTime++;
+    if (!hasGps(p)) noGps++;
+    state.photos.push(p); state.byKey.set(key, p); added.push(p);
+  }
+  progress(null);
+  computeDays();
+  if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
+  render();
+  queueThumbs(added);
+  if (isSignedIn()) scheduleSync();
+  const bits = [`${added.length}장 추가`];
+  if (noGps) bits.push(`위치 없음 ${noGps}장`);
+  if (noTime) bits.push(`촬영 시각 없음 ${noTime}장 (파일 수정 시각으로 대신함)`);
+  if (dup) bits.push(`중복 ${dup}장 건너뜀`);
+  toast(bits.join(" · "), 5000);
+}
+async function collectDropped(dt) {
+  const items = dt.items ? [...dt.items] : [];
+  const entries = items.map((it) => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  async function walk(entry) {
+    if (entry.isFile) { out.push(await new Promise((res, rej) => entry.file(res, rej))); return; }
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      for (;;) {
+        const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        if (!batch.length) break;
+        for (const e of batch) await walk(e);
+      }
+    }
+  }
+  for (const e of entries) await walk(e);
+  return out;
+}
+
+/* ---------- notes & editing ---------- */
+function setGroupNote(gkey, field, val) {
+  const n = state.store.groupNotes[gkey] || {};
+  n[field] = val;
+  if (!n.title && !n.text) delete state.store.groupNotes[gkey]; else state.store.groupNotes[gkey] = n;
+  saveSoon();
+}
+function mergeWithPrevious(gkey) {
+  const d = state.dayByKey.get(state.current); if (!d) return;
+  const i = d.groups.findIndex((g) => g.key === gkey); if (i <= 0) return;
+  const prev = d.groups[i - 1];
+  const a = state.store.groupNotes[prev.key] || {}, b = state.store.groupNotes[gkey] || {};
+  if (b.title || b.text) {
+    const merged = { title: a.title || b.title || "", text: [a.text, b.text].filter(Boolean).join("\n\n") };
+    if (a.title && b.title && a.title !== b.title) merged.text = [merged.text, `(합친 묶음 이름: ${b.title})`].filter(Boolean).join("\n");
+    state.store.groupNotes[prev.key] = merged; delete state.store.groupNotes[gkey];
+  }
+  state.store.breaks[gkey] = false;
+  saveSoon(); computeDays(); state.selectedGroup = prev.key; render({ keepScroll: true, fit: false });
+  toast(`묶음 ${i}과 ${i + 1}을 합쳤습니다`);
+}
+function splitAt(pkey) {
+  const p = state.byKey.get(pkey); if (!p) return;
+  const d = state.dayByKey.get(p.dayKey); const g = d.groups.find((x) => x.key === p.groupKey);
+  if (g.key === pkey) { mergeWithPreviousFromPhoto(p); return; }
+  state.store.breaks[pkey] = true;
+  saveSoon(); computeDays(); render({ keepScroll: true, fit: false });
+  toast("이 사진부터 새 묶음으로 나눴습니다");
+}
+function mergeWithPreviousFromPhoto(p) {
+  const prevCur = state.current; state.current = p.dayKey; mergeWithPrevious(p.groupKey); if (prevCur === "all") { state.current = "all"; render({ keepScroll: true, fit: false }); }
+}
+
+/* ---------- lightbox ---------- */
+function lbList(p) { return (state.dayByKey.get(p.dayKey) || { photos: [p] }).photos; }
+let lbToken = 0;
+async function openLightbox(pkey) {
+  const p = state.byKey.get(pkey); if (!p) return;
+  state.lb = pkey;
+  const lb = $("#lightbox"); lb.hidden = false; document.body.style.overflow = "hidden";
+  const list = lbList(p); const i = list.indexOf(p);
+  const g = findGroup(p.dayKey, p.groupKey);
+  $("#lbCount").textContent = `${i + 1} / ${list.length}`;
+  $("#lbTime").textContent = `${dayLabel(p.dayKey, true)} ${fmtTime(p.time)}${p.timeEstimated ? " (추정)" : ""}`;
+  $("#lbFile").textContent = `${p.name}${hasGps(p) ? ` · ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : " · 위치 정보 없음"}`;
+  $("#lbGroup").textContent = g ? `묶음 ${g.idx + 1}${groupTitle(g.key) ? ` · ${groupTitle(g.key)}` : ""} · ${g.photos.length}장` : "";
+  $("#lbNote").value = state.store.photoNotes[pkey] || "";
+  const isFirst = g && g.key === pkey;
+  const split = $("#lbSplit");
+  split.textContent = isFirst ? "앞 묶음과 합치기" : "이 사진부터 새 묶음";
+  split.hidden = isFirst && g.idx === 0;
+  $("#lbShowMap").hidden = !hasGps(p);
+  const gm = $("#lbGmaps"); gm.hidden = !hasGps(p); if (hasGps(p)) gm.href = gmapsUrl(p.lat, p.lng);
+  $("#lbPrev").disabled = i <= 0; $("#lbNext").disabled = i >= list.length - 1;
+  const img = $("#lbImg"); const token = ++lbToken;
+  img.removeAttribute("src"); $("#lbLoading").hidden = false; $("#lbLoading").textContent = "불러오는 중…";
+  try {
+    const url = await fullUrl(p);
+    if (token !== lbToken) return;
+    img.src = url; img.alt = p.name; $("#lbLoading").hidden = true;
+  } catch (e) {
+    if (token !== lbToken) return;
+    $("#lbLoading").textContent = `이 사진을 표시하지 못했습니다: ${e.message || e}`;
+  }
+}
+function closeLightbox() {
+  $("#lightbox").hidden = true; document.body.style.overflow = ""; const k = state.lb; state.lb = null; lbToken++;
+  renderPanel({ keepScroll: true });
+  if (k) { const el = document.querySelector(`.thumb[data-photo="${CSS.escape(k)}"]`); if (el) el.focus({ preventScroll: true }); }
+}
+function lbStep(dir) {
+  const p = state.byKey.get(state.lb); if (!p) return;
+  const list = lbList(p); const i = list.indexOf(p) + dir;
+  if (i >= 0 && i < list.length) openLightbox(list[i].key);
+}
+
+/* ---------- demo ---------- */
+function demoImage(label, sub, hue) {
+  const c = document.createElement("canvas"); c.width = 960; c.height = 720; const x = c.getContext("2d");
+  const g = x.createLinearGradient(0, 0, 960, 720);
+  g.addColorStop(0, `hsl(${hue} 45% 62%)`); g.addColorStop(1, `hsl(${(hue + 40) % 360} 40% 32%)`);
+  x.fillStyle = g; x.fillRect(0, 0, 960, 720);
+  x.fillStyle = "rgba(255,255,255,.12)"; for (let i = 0; i < 7; i++) x.fillRect(80 + i * 120, 300 - i * 18, 70, 420);
+  x.fillStyle = "#fff"; x.font = "600 54px 'IBM Plex Sans KR', sans-serif"; x.fillText(label, 130, 300);
+  x.font = "400 30px 'IBM Plex Mono', monospace"; x.fillText(sub, 132, 350);
+  x.font = "500 26px 'IBM Plex Sans KR', sans-serif"; x.fillStyle = "rgba(255,255,255,.8)"; x.fillText("예시 이미지", 132, 640);
+  return c.toDataURL("image/jpeg", 0.8);
+}
+function loadDemo() {
+  state.demo = true;
+  const rows = [
+    ["2026-09-10T08:41", 34.96714, 135.77267, "후시미이나리 입구", 20],
+    ["2026-09-10T08:52", 34.96790, 135.77445, "센본도리이", 20],
+    ["2026-09-10T09:16", 34.96850, 135.77640, "요쓰쓰지 전망", 20],
+    ["2026-09-10T10:31", 34.97640, 135.77384, "도후쿠지 쓰텐쿄", 140],
+    ["2026-09-10T10:44", 34.97682, 135.77420, "도후쿠지 방장 정원", 140],
+    ["2026-09-10T13:05", 34.99485, 135.78503, "기요미즈데라 본당", 30],
+    ["2026-09-10T13:21", 34.99460, 135.78531, "기요미즈 무대", 30],
+    ["2026-09-10T13:34", 34.99431, 135.78470, "오토와 폭포", 30],
+    ["2026-09-10T14:12", 34.99648, 135.78150, "산넨자카", 60],
+    ["2026-09-10T15:03", 35.00368, 135.77853, "야사카 신사", 0],
+    ["2026-09-11T08:10", 35.01702, 135.67130, "대나무 숲", 100],
+    ["2026-09-11T08:24", 35.01750, 135.67224, "대나무 숲 안쪽", 100],
+    ["2026-09-11T09:05", 35.01582, 135.67370, "덴류지 소겐치 정원", 170],
+    ["2026-09-11T09:31", 35.01560, 135.67420, "덴류지 법당", 170],
+    ["2026-09-11T11:10", 35.01280, 135.67780, "도게쓰쿄", 200],
+    ["2026-09-11T12:32", null, null, "점심 (위치 꺼짐)", 40],
+  ];
+  state.photos = rows.map(([t, lat, lng, label, hue], i) => {
+    const time = new Date(t);
+    const url = demoImage(label, `${t.slice(11)} · ${lat != null ? lat.toFixed(4) + ", " + lng.toFixed(4) : "위치 없음"}`, hue);
+    const name = `IMG_${4210 + i}.HEIC`;
+    return { key: `${name}|${fmtStamp(time)}`, name, file: null, time, timeEstimated: false, lat, lng, thumbUrl: url, demoUrl: url };
+  });
+  state.byKey = new Map(state.photos.map((p) => [p.key, p]));
+  const k = (i) => state.photos[i].key;
+  state.store = emptyStore();
+  state.store.groupNotes[k(0)] = { title: "후시미이나리 신사", text: "8시 40분인데도 입구는 이미 붐빔. 요쓰쓰지까지만 올라가도 사람이 확 줄어듦." };
+  state.store.groupNotes[k(3)] = { title: "도후쿠지", text: "" };
+  state.store.groupNotes[k(5)] = { title: "기요미즈데라", text: "본당 목조 무대는 못 하나 없이 짜 맞춘 구조." };
+  state.store.groupNotes[k(8)] = { title: "산넨자카", text: "" };
+  state.store.groupNotes[k(9)] = { title: "야사카 신사", text: "" };
+  state.store.groupNotes[k(10)] = { title: "아라시야마 대나무 숲", text: "" };
+  state.store.groupNotes[k(12)] = { title: "덴류지", text: "소겐치 정원은 방장 툇마루에 앉아서 보는 게 정답." };
+  state.store.photoNotes[k(2)] = "여기서 교토 시내가 내려다보임. 정상까지는 안 감.";
+  state.store.photoNotes[k(6)] = "무대 아래 기둥 구조 사진은 오쿠노인 쪽에서 찍어야 잘 나옴.";
+  state.store.dayNotes["2026-09-10"] = "남쪽(후시미)에서 시작해 북쪽(기온)으로 올라가는 동선. 걸은 거리가 꽤 됨.";
+  computeDays();
+  state.current = state.days[0].key;
+  $("#demoBanner").hidden = false;
+}
+function exitDemo() {
+  state.demo = false; state.photos = []; state.byKey = new Map(); state.store = loadStore(); state.current = "all"; state.selectedGroup = null;
+  $("#demoBanner").hidden = true; syncSettingsInputs();
+}
+
+/* ---------- settings ---------- */
+function syncSettingsInputs() {
+  const s = state.store.settings;
+  $("#setDayStart").value = s.dayStartHour; $("#setDist").value = s.distM; $("#setGap").value = s.gapMin;
+}
+function onSetting(id, field, min, max) {
+  $(id).addEventListener("change", (e) => {
+    let v = Math.round(Number(e.target.value)); if (!Number.isFinite(v)) v = state.store.settings[field];
+    v = Math.min(max, Math.max(min, v)); e.target.value = v;
+    state.store.settings[field] = v; saveSoon(); computeDays(); render({ fit: false });
+  });
+}
+
+/* ---------- events ---------- */
+function bind() {
+  $("#fileInput").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+  $("#dirInput").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+  $("#dayTabs").addEventListener("click", (e) => { const b = e.target.closest("[data-day]"); if (b) selectDay(b.dataset.day); });
+  const panel = $("#panel");
+  panel.addEventListener("click", (e) => {
+    const dc = e.target.closest(".daycard"); if (dc) { selectDay(dc.dataset.day); return; }
+    const ph = e.target.closest("[data-photo]"); if (ph) { openLightbox(ph.dataset.photo); return; }
+    const act = e.target.closest("[data-act]"); if (!act) return;
+    const gkey = act.closest(".group").dataset.group;
+    if (act.dataset.act === "focus") selectGroup(gkey, { fly: true, scroll: false });
+    if (act.dataset.act === "merge") mergeWithPrevious(gkey);
+  });
+  panel.addEventListener("input", (e) => {
+    const t = e.target;
+    if (t.dataset.gtitle) {
+      setGroupNote(t.dataset.gtitle, "title", t.value.trim() ? t.value : "");
+      const m = markerByGroup.get(t.dataset.gtitle); if (m) m.setTooltipContent(t.value || "(이름 없음)");
+    } else if (t.dataset.gnote) setGroupNote(t.dataset.gnote, "text", t.value);
+    else if (t.dataset.daynote) {
+      if (t.value) state.store.dayNotes[t.dataset.daynote] = t.value; else delete state.store.dayNotes[t.dataset.daynote];
+      saveSoon();
+    }
+  });
+  $("#lbNote").addEventListener("input", (e) => {
+    if (!state.lb) return;
+    if (e.target.value) state.store.photoNotes[state.lb] = e.target.value; else delete state.store.photoNotes[state.lb];
+    saveSoon();
+  });
+  $("#lbClose").onclick = closeLightbox;
+  $("#lbPrev").onclick = () => lbStep(-1);
+  $("#lbNext").onclick = () => lbStep(1);
+  $("#lbSplit").onclick = () => { const k = state.lb; splitAt(k); openLightbox(k); };
+  $("#lbShowMap").onclick = () => {
+    const p = state.byKey.get(state.lb); closeLightbox();
+    if (p && hasGps(p)) {
+      if (state.current !== p.dayKey) selectDay(p.dayKey);
+      selectGroup(p.groupKey, { fly: false, scroll: true });
+      map.flyTo([p.lat, p.lng], 18, { duration: 0.6 });
+    }
+  };
+  $("#lbStage").addEventListener("click", (e) => { if (e.target.id === "lbStage") closeLightbox(); });
+  let tx = null;
+  $("#lbStage").addEventListener("touchstart", (e) => { tx = e.touches[0].clientX; }, { passive: true });
+  $("#lbStage").addEventListener("touchend", (e) => {
+    if (tx == null) return; const dx = e.changedTouches[0].clientX - tx; tx = null;
+    if (Math.abs(dx) > 50) lbStep(dx < 0 ? 1 : -1);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!state.lb) return;
+    const typing = /^(TEXTAREA|INPUT)$/.test(document.activeElement && document.activeElement.tagName);
+    if (e.key === "Escape") { if (typing) document.activeElement.blur(); else closeLightbox(); }
+    if (typing) return;
+    if (e.key === "ArrowLeft") lbStep(-1);
+    if (e.key === "ArrowRight") lbStep(1);
+  });
+
+  // 메모 파일
+  $("#btnExportNotes").onclick = () => {
+    $("#menuData").open = false;
+    if (state.demo) { toast("예시 메모는 저장하지 않습니다. 사진을 추가한 뒤 저장하세요"); return; }
+    const d = new Date();
+    const payload = Object.assign({}, state.store, {
+      exportedAt: d.toISOString(),
+      photos: state.photos.map((p) => ({ key: p.key, name: p.name, time: p.time.toISOString(), lat: p.lat, lng: p.lng })),
+    });
+    download(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `사진동선_메모_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`);
+    toast("메모 파일을 저장했습니다");
+  };
+  $("#importInput").addEventListener("change", async (e) => {
+    const f = e.target.files[0]; e.target.value = ""; $("#menuData").open = false; if (!f) return;
+    try {
+      const s = JSON.parse(await f.text());
+      if (!s || s.v !== 1) throw new Error("형식이 다릅니다");
+      if (state.demo) exitDemo();
+      state.store = mergeStore(state.store, s); saveNow(); syncSettingsInputs(); computeDays(); render({ fit: false });
+      const n = Object.keys(s.photoNotes || {}).length + Object.keys(s.groupNotes || {}).length + Object.keys(s.dayNotes || {}).length;
+      toast(`메모 ${n}개를 불러왔습니다${state.photos.length ? "" : " · 같은 사진을 추가하면 메모가 붙습니다"}`, 5000);
+    } catch (err) { toast(`메모 파일을 읽지 못했습니다: ${err.message}`); }
+  });
+
+  // ZIP
+  $("#btnZipDay").onclick = async () => {
+    $("#menuData").open = false;
+    if (state.demo || !state.photos.length) { toast("먼저 사진을 추가하세요"); return; }
+    if (state.current === "all") { toast("날짜 탭을 먼저 고르세요. 전체는 '전체 사진 JPEG로 저장'을 쓰세요"); return; }
+    const r = await exportZip(state.dayByKey.get(state.current), dayLabel(state.current, true));
+    progress(null); toast(`저장 완료 · JPEG로 변환 ${r.converted}장${r.failed ? ` · 실패 ${r.failed}장` : ""}`, 5000);
+  };
+  $("#btnZipAll").onclick = async () => {
+    $("#menuData").open = false;
+    if (state.demo || !state.photos.length) { toast("먼저 사진을 추가하세요"); return; }
+    let conv = 0, fail = 0;
+    for (const d of state.days) { const r = await exportZip(d, dayLabel(d.key, true)); conv += r.converted; fail += r.failed; }
+    progress(null); toast(`ZIP ${state.days.length}개 저장 · JPEG로 변환 ${conv}장${fail ? ` · 실패 ${fail}장` : ""}`, 6000);
+  };
+
+  // 연동
+  $("#btnSignIn").onclick = () => { $("#menuSync").open = false; signIn(); };
+  $("#btnSyncNow").onclick = () => { $("#menuSync").open = false; pushToDrive(true); };
+  $("#btnSignOut").onclick = () => { $("#menuSync").open = false; signOut(); };
+
+  // settings
+  onSetting("#setDayStart", "dayStartHour", 0, 8);
+  onSetting("#setDist", "distM", 20, 2000);
+  onSetting("#setGap", "gapMin", 1, 240);
+  $("#btnResetBreaks").onclick = () => {
+    $("#menuSettings").open = false; state.store.breaks = {}; saveSoon(); computeDays(); render({ fit: false });
+    toast("자동 묶음으로 되돌렸습니다");
+  };
+  document.addEventListener("click", (e) => {
+    for (const m of document.querySelectorAll("details.menu[open]")) if (!m.contains(e.target)) m.open = false;
+  });
+
+  // drag & drop
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) { dragDepth++; $("#dropHint").hidden = false; } });
+  window.addEventListener("dragleave", () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $("#dropHint").hidden = true; });
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", async (e) => {
+    e.preventDefault(); dragDepth = 0; $("#dropHint").hidden = true;
+    if (!e.dataTransfer) return;
+    const files = await collectDropped(e.dataTransfer);
+    addFiles(files);
+  });
+  window.addEventListener("resize", () => map && map.invalidateSize());
+}
+
+/* ---------- boot ---------- */
+function boot() {
+  const missing = [];
+  if (typeof L === "undefined") missing.push("지도(Leaflet)");
+  if (typeof exifr === "undefined") missing.push("EXIF 판독기");
+  if (missing.length) { document.getElementById("panel").innerHTML = `<div class="panel-inner"><div class="empty"><h2>도구를 불러오지 못했습니다</h2><p>${missing.join(", ")}</p></div></div>`; return; }
+  initMap(); bind(); syncSettingsInputs();
+  initDrive();
+  loadDemo();
+  render();
+  setTimeout(() => renderMap(true), 80);
+  if (window.ResizeObserver) new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById("map"));
+  if (!storageOk) toast("이 브라우저에서는 자동 저장이 안 됩니다. 메모 파일로 저장하세요", 6000);
+}
+boot();
+})();
+</script>
+</body>
+</html>

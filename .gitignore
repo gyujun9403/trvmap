@@ -1,0 +1,13 @@
+# 테스트 생성물
+tests/fixtures/
+tests/out/
+# Python
+__pycache__/
+*.pyc
+.venv/
+# npm pack 임시
+*.tgz
+node_modules/
+# OS
+.DS_Store
+Thumbs.db
