@@ -709,7 +709,8 @@ svg.leaflet-image-layer.leaflet-interactive path {
 html, body { height: 100%; margin: 0; }
 body {
   background: var(--bg); color: var(--ink); font: 14px/1.55 var(--font-body);
-  display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden;
+  /* flex 컬럼: 헤더/배너/탭은 내용 높이, .layout 이 남은 높이를 전부 차지(숨은 요소 개수와 무관하게 지도 높이 보장) */
+  display: flex; flex-direction: column; overflow: hidden;
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -775,7 +776,7 @@ button { cursor: pointer; }
 .day-tab[aria-selected="true"] .n { color: inherit; opacity: .7; }
 
 /* Main layout */
-.layout { display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); min-height: 0; }
+.layout { flex: 1 1 0; display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); min-height: 0; }
 .panel { overflow-y: auto; border-right: 1px solid var(--line); background: var(--bg); padding-block: 14px 40px; }
 .panel-inner { display: grid; gap: 12px; padding: 0 16px; }
 .mapwrap { position: relative; min-height: 0; }
@@ -4143,7 +4144,7 @@ function renderPanel(opts = {}) {
 }
 
 /* ---------- map ---------- */
-let map, lg, tiles = {}, markerByGroup = new Map();
+let map, lg, tiles = {}, markerByGroup = new Map(), mapFitted = false;
 function initMap() {
   map = L.map("map", { zoomControl: true, preferCanvas: false }).setView([37.5665, 126.978], 11);
   tiles.map = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
@@ -4196,8 +4197,10 @@ function renderMap(fit) {
   }
   map.invalidateSize(false); // 사진이 없을 때도 컨테이너 높이에 맞춰 타일을 다시 그린다(빈 회색 영역 방지)
   if (fit && bounds.length) {
-    if (bounds.length === 1) map.setView(bounds[0], 16);
-    else map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+    const animate = mapFitted; // 첫 맞춤은 즉시, 이후(날짜/탭 전환)에는 부드럽게 확대
+    if (bounds.length === 1) animate ? map.flyTo(bounds[0], 16, { duration: 0.7 }) : map.setView(bounds[0], 16);
+    else animate ? map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 17, duration: 0.7 }) : map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+    mapFitted = true;
   }
 }
 function selectDay(key) {
