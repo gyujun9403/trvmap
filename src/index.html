@@ -444,7 +444,7 @@ function initDrive() {
       drive.ready = true; setSync("signedout");
       if (localStorage.getItem(LS_CONNECTED)) {
         requestToken(false).then(() => pullFromDrive())
-          .catch(() => setSync("signedout"));
+          .catch((e) => { if (isAuthError(e)) setSync("signedout"); else { setSync("error", e.message || String(e)); console.error("[drive] auto-connect", e); } });
       }
     } else if (++tries > 40) { clearInterval(t); setSync("offline"); }
   }, 250);
@@ -486,7 +486,7 @@ async function api(url, opts = {}) {
   await ensureToken();
   let resp = await rawFetch(url, opts);
   if (resp.status === 401) { drive.token = null; await requestToken(allowPopup); resp = await rawFetch(url, opts); }
-  if (!resp.ok) throw new Error(`Drive ${resp.status}: ${(await resp.text()).slice(0, 150)}`);
+  if (!resp.ok) { const body = (await resp.text()).slice(0, 300); console.error("[drive] " + (opts.method || "GET") + " " + url + " → " + resp.status, body); throw new Error(`Drive ${resp.status}: ${body.slice(0, 150)}`); }
   return resp;
 }
 function isAuthError(e) { return /popup|token|interaction_required|access_denied|로그인/i.test((e && e.message) || ""); }
@@ -642,7 +642,11 @@ async function signIn() {
   setSync("signingin");
   allowPopup = true;
   try { await requestToken(true); localStorage.setItem(LS_CONNECTED, "1"); await pullFromDrive(); }
-  catch (e) { setSync("signedout"); toast("연동 로그인에 실패했습니다: " + (e.message || e)); }
+  catch (e) {
+    console.error("[drive] signIn", e);
+    if (isAuthError(e)) { setSync("signedout"); toast("연동 로그인에 실패했습니다: " + (e.message || e), 6000); }
+    else { setSync("error", e.message || String(e)); toast("드라이브 접근 실패: " + (e.message || e), 7000); }
+  }
   finally { allowPopup = false; }
 }
 // 사용자 클릭(제스처)으로 호출 → 필요하면 팝업 재인증까지 허용하는 수동 동기화
