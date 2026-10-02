@@ -884,6 +884,10 @@ button { cursor: pointer; }
 .gmark.day span { width: auto; padding: 0 8px; border-radius: 14px; white-space: nowrap; }
 .gmark.place span { width: auto; padding: 0 10px; border-radius: 14px; height: 30px; font: 600 13px/1 "IBM Plex Sans KR", system-ui, sans-serif; white-space: nowrap; }
 .leaflet-tooltip { font-family: var(--font-body); font-size: 12px; }
+/* 장소 이름 라벨: 이름을 붙인 묶음은 마커 옆에 항상 표시 */
+.leaflet-tooltip.glabel { padding: 2px 7px; border: 0; border-radius: 4px; font-weight: 600; color: #1b2220; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+.leaflet-tooltip.glabel::before { display: none; }
+.leaflet-tooltip.glabel.small { font-size: 11px; padding: 1px 6px; }
 
 /* Lightbox */
 .lightbox {
@@ -909,6 +913,7 @@ button { cursor: pointer; }
 .lb-time { font-size: 18px; font-weight: 600; }
 .lb-file { font-size: 12px; color: #97a39d; overflow-wrap: anywhere; }
 .lb-group { font-size: 13px; padding: 8px 10px; border-radius: 6px; background: #1f2522; }
+.lb-side select { height: 34px; padding: 0 8px; border-radius: 6px; border: 1px solid #333b38; background: #0f1211; color: #eef1ef; font-size: 13px; }
 .lb-side label { font-size: 11px; letter-spacing: .06em; color: #97a39d; font-weight: 600; }
 .lb-side textarea {
   width: 100%; min-height: 140px; resize: vertical; padding: 10px 12px; border-radius: 6px; border: 1px solid #333b38; background: #0f1211; color: #eef1ef;
@@ -1021,6 +1026,8 @@ button { cursor: pointer; }
     <div class="lb-time" id="lbTime"></div>
     <div class="lb-file" id="lbFile"></div>
     <div class="lb-group" id="lbGroup"></div>
+    <label for="lbTrip" id="lbTripLabel">여행지 그룹</label>
+    <select id="lbTrip"></select>
     <label for="lbNote">이 사진 메모</label>
     <textarea id="lbNote" placeholder="이 사진에 대한 메모 (자동 저장)"></textarea>
     <div class="lb-actions">
@@ -4241,6 +4248,7 @@ function renderPanel(opts = {}) {
     h += `<div class="dayhead" style="--c:${d.color}">${curPlace ? `<div class="label">${esc(curPlace.label)}</div>` : ""}<h2>${esc(dayLabel(d.key))}</h2>
       <div class="stats"><span class="mono"><b>${fmtTime(d.photos[0].time)}–${fmtTime(d.photos[d.photos.length - 1].time)}</b></span><span>사진 <b>${d.photos.length}</b>장</span><span>묶음 <b>${d.groups.length}</b>개</span><span>사진 사이 직선거리 <b>${fmtDist(d.dist)}</b></span>${d.gpsCount < d.photos.length ? `<span>위치 없음 <b>${d.photos.length - d.gpsCount}</b>장</span>` : ""}</div>
       ${othersHtml}
+      ${hasTrips() ? `<div class="others">이날${curPlace ? " 이 그룹" : ""} 사진 ${d.photos.length}장을 <select class="gplace" data-daymove="${d.key}" aria-label="이날 사진 옮길 그룹"><option value="">그룹 선택…</option>${tripOptions(state.place)}</select> (으)로 옮기기</div>` : ""}
       <label class="label" for="dayNote">이날 메모</label>
       <textarea class="note" id="dayNote" data-daynote="${d.key}" placeholder="하루 전체에 대한 메모 (자동 저장)">${esc(state.store.dayNotes[d.key] || "")}</textarea></div>`;
     let prev = null;
@@ -4257,7 +4265,7 @@ function renderPanel(opts = {}) {
         <div class="ghead">
           <button class="gnum${g.center ? "" : " nogps"}" data-act="focus" title="${g.center ? "지도에서 보기" : "위치 정보 없음"}">${g.idx + 1}</button>
           <div class="gmeta">
-            <input class="gtitle" id="gt-${id}" data-gtitle="${esc(g.key)}" value="${esc(gn.title || "")}" placeholder="장소 이름 입력" aria-label="묶음 ${g.idx + 1} 장소 이름">
+            <input class="gtitle" id="gt-${id}" data-gtitle="${esc(g.key)}" value="${esc(gn.title || "")}" placeholder="장소 이름 입력 (지도에 표시)" aria-label="묶음 ${g.idx + 1} 장소 이름">
             <div class="gsub"><span class="mono">${fmtTime(g.start)}${g.end - g.start >= 60000 ? `–${fmtTime(g.end)}` : ""}</span><span>${g.photos.length}장</span>${g.center ? `<a href="${gmapsUrl(g.center[0], g.center[1])}" target="_blank" rel="noopener">구글맵에서 열기</a>` : "<span>위치 없음</span>"}${placeSelect(g)}</div>
           </div>
           ${g.idx > 0 && full.groups[g.idx - 1].place === g.place ? `<button class="small-btn" data-act="merge" title="바로 앞 묶음과 하나로 합칩니다">앞 묶음과 합치기</button>` : "<span></span>"}
@@ -4313,6 +4321,15 @@ function renderMap(fit) {
         m.bindTooltip(dayLabel(d.key), { direction: "top", offset: [0, -14] });
         m.on("click", () => selectDay(d.key));
       }
+      // 여러 날 보기에서도 이름을 붙인 장소는 작은 점 + 이름으로 표시(누르면 그날의 그 묶음으로)
+      if (!placeMarkers) {
+        for (const g of d.groups) {
+          const t = groupTitle(g.key); if (!t || !g.center) continue;
+          L.circleMarker(g.center, { radius: 5, color: "#fff", weight: 2, fillColor: d.color, fillOpacity: 1 })
+            .bindTooltip(esc(t), { permanent: true, direction: "right", offset: [8, 0], className: "glabel small" })
+            .on("click", () => { selectDay(d.key); selectGroup(g.key, { fly: true, scroll: true }); }).addTo(lg);
+        }
+      }
       continue;
     }
     for (const p of d.photos) {
@@ -4323,7 +4340,8 @@ function renderMap(fit) {
     for (const g of d.groups) {
       if (!g.center) continue;
       const m = L.marker(g.center, { icon: markerIcon(d.color, g.idx + 1, state.selectedGroup === g.key ? "sel" : ""), zIndexOffset: 500 }).addTo(lg);
-      m.bindTooltip(groupTitle(g.key) || `${fmtTime(g.start)} · ${g.photos.length}장`, { direction: "top", offset: [0, -14] });
+      m.fallbackTip = `${fmtTime(g.start)} · ${g.photos.length}장`;
+      groupTooltip(m, groupTitle(g.key));
       m.on("click", () => selectGroup(g.key, { fly: false, scroll: true }));
       markerByGroup.set(g.key, m);
     }
@@ -4346,6 +4364,12 @@ function renderMap(fit) {
     mapFitted = true;
   }
 }
+// 묶음 마커 툴팁: 이름이 있으면 마커 옆에 항상, 없으면 마우스를 올렸을 때 시각·장수
+function groupTooltip(m, title) {
+  m.unbindTooltip();
+  if (title) m.bindTooltip(esc(title), { permanent: true, direction: "right", offset: [16, 0], className: "glabel" });
+  else m.bindTooltip(m.fallbackTip, { direction: "top", offset: [0, -14] });
+}
 function selectDay(key) {
   state.current = key; state.selectedGroup = null;
   render();
@@ -4355,13 +4379,30 @@ function selectPlace(id, keepDay) {
   if (!keepDay || !viewDays().some((d) => d.key === state.current)) state.current = "all";
   render();
 }
+// 사진들을 여행지 그룹(또는 미분류)으로 옮기고 그룹 이름을 돌려준다
+function movePhotos(photos, val) {
+  for (const p of photos) { if (val === NONE) delete state.store.photoTrip[p.key]; else state.store.photoTrip[p.key] = val; }
+  saveSoon(); computeDays();
+  const t = state.store.trips[val];
+  return t ? t.name || "이름 없는 그룹" : "미분류";
+}
+function tripOptions(exclude) {
+  return tripList().filter((t) => t.id !== exclude).map((t) => `<option value="${esc(t.id)}">${esc(t.name || "이름 없는 그룹")}</option>`).join("") +
+    (exclude === NONE ? "" : `<option value="${NONE}">미분류</option>`);
+}
 function setGroupPlace(gkey, val) {
   const g = state.days.flatMap((d) => d.groups).find((x) => x.key === gkey); if (!g) return;
-  for (const p of g.photos) { if (val === NONE) delete state.store.photoTrip[p.key]; else state.store.photoTrip[p.key] = val; }
-  saveSoon(); computeDays();
+  const name = movePhotos(g.photos, val);
   render({ keepScroll: true, fit: false });
-  const t = state.store.trips[val];
-  toast(`묶음 ${g.photos.length}장을 ‘${t ? t.name || "이름 없는 그룹" : "미분류"}’(으)로 옮겼습니다`);
+  toast(`묶음 ${g.photos.length}장을 ‘${name}’(으)로 옮겼습니다`);
+}
+// 하루 보기의 사진(그룹 탭이면 그 그룹 부분)을 통째로 옮기고, 그룹 탭이었다면 옮긴 그룹으로 따라간다
+function moveDay(dayKey, val) {
+  const photos = viewOf(state.dayByKey.get(dayKey)).photos;
+  const name = movePhotos(photos, val);
+  if (state.place !== "all") { state.place = state.placeById.has(val) ? val : "all"; state.current = dayKey; }
+  render({ fit: false });
+  toast(`이날 사진 ${photos.length}장을 ‘${name}’(으)로 옮겼습니다`);
 }
 function createTrip(name) {
   name = name.trim(); state.newTrip = false;
@@ -4670,6 +4711,8 @@ async function openLightbox(pkey) {
   $("#lbFile").textContent = `${p.name}${hasGps(p) ? ` · ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : " · 위치 정보 없음"}`;
   $("#lbGroup").textContent = g ? `묶음 ${g.idx + 1}${groupTitle(g.key) ? ` · ${groupTitle(g.key)}` : ""} · ${g.photos.length}장` : "";
   $("#lbNote").value = state.store.photoNotes[pkey] || "";
+  const lt = $("#lbTrip"); lt.hidden = $("#lbTripLabel").hidden = !hasTrips();
+  if (hasTrips()) { lt.innerHTML = `<option value="${esc(p.place)}">${esc(p.place === NONE ? "미분류" : state.store.trips[p.place].name || "이름 없는 그룹")}</option>${tripOptions(p.place)}`; lt.value = p.place; }
   const isFirst = g && g.key === pkey;
   const split = $("#lbSplit");
   split.textContent = isFirst ? "앞 묶음과 합치기" : "이 사진부터 새 묶음";
@@ -4808,7 +4851,7 @@ function bind() {
     const t = e.target;
     if (t.dataset.gtitle) {
       setGroupNote(t.dataset.gtitle, "title", t.value.trim() ? t.value : "");
-      const m = markerByGroup.get(t.dataset.gtitle); if (m) m.setTooltipContent(t.value || "(이름 없음)");
+      const m = markerByGroup.get(t.dataset.gtitle); if (m) groupTooltip(m, t.value.trim());
     } else if (t.dataset.gnote) setGroupNote(t.dataset.gnote, "text", t.value);
     else if (t.dataset.pname) setPlaceName(t.dataset.pname, t.value);
     else if (t.dataset.daynote) {
@@ -4819,6 +4862,7 @@ function bind() {
   panel.addEventListener("change", (e) => {
     const t = e.target;
     if (t.dataset.gplace) setGroupPlace(t.dataset.gplace, t.value);
+    else if (t.dataset.daymove && t.value) moveDay(t.dataset.daymove, t.value);
     else if (t.dataset.pname) commitPlaceName();
   });
   $("#lbNote").addEventListener("input", (e) => {
@@ -4830,6 +4874,12 @@ function bind() {
   $("#lbPrev").onclick = () => lbStep(-1);
   $("#lbNext").onclick = () => lbStep(1);
   $("#lbSplit").onclick = () => { const k = state.lb; splitAt(k); openLightbox(k); };
+  $("#lbTrip").addEventListener("change", (e) => {
+    const k = state.lb, p = state.byKey.get(k); if (!p || e.target.value === p.place) return;
+    const name = movePhotos([p], e.target.value);
+    render({ keepScroll: true, fit: false }); openLightbox(k);
+    toast(`이 사진을 ‘${name}’(으)로 옮겼습니다`);
+  });
   $("#lbShowMap").onclick = () => {
     const p = state.byKey.get(state.lb); closeLightbox();
     if (p && hasGps(p)) {
@@ -4848,7 +4898,7 @@ function bind() {
   });
   document.addEventListener("keydown", (e) => {
     if (!state.lb) return;
-    const typing = /^(TEXTAREA|INPUT)$/.test(document.activeElement && document.activeElement.tagName);
+    const typing = /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
     if (e.key === "Escape") { if (typing) document.activeElement.blur(); else closeLightbox(); }
     if (typing) return;
     if (e.key === "ArrowLeft") lbStep(-1);
