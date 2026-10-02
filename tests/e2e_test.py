@@ -387,8 +387,14 @@ async def test_drive_resume(browser):
     await pg.reload()
     await pg.wait_for_timeout(2500)
     check("6장" in await pg.inner_text("#dayTabs"), "다시 열면 드라이브에서 6장 복원")
+    await pg.locator("#dayTabs .day-tab").nth(1).click()
+    await wait_for(lambda: True, 500)
+    srcs = await pg.eval_on_selector_all(".thumb img", "els => els.map(e => e.src)")
     await pg.set_input_files("#fileInput", files)
-    await pg.wait_for_timeout(4000)
+    await pg.wait_for_timeout(1500)
+    after = await pg.eval_on_selector_all(".thumb img", "els => els.map(e => e.src)")
+    check(len(srcs) == 4 and srcs == after, f"같은 사진 다시 추가 → 드라이브 썸네일 그대로(미리보기 다시 안 만듦) {len(srcs)}")
+    await pg.wait_for_timeout(2500)
     check(len(jpgs()) == 6, f"같은 사진 다시 추가 → 원본 재업로드 없음 (업로드 {len(jpgs())})")
 
     # 업로드 도중 닫혀 목록(project.json)에 2장이 빠진 상황 → 자동 복구, 다시 추가해도 재업로드 없음
