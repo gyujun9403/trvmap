@@ -892,10 +892,13 @@ function renderPanel(opts = {}) {
       inner = `<h2>연동이 필요합니다</h2><p>구글 계정에 로그인하면 내 드라이브에 저장해 둔 사진·동선·메모를 이 기기에서 불러옵니다.<br>처음이라면 아래 ‘사진 추가’로 바로 시작해도 됩니다.</p>` +
         `<button class="btn primary" id="emptySignIn">구글 계정으로 로그인</button> <label class="btn" for="fileInput">사진 추가</label>`;
     } else {
-      inner = `<h2>여행 사진을 추가하세요</h2><p>사진의 촬영 시각과 GPS 위치를 읽어 날짜별 동선을 그립니다.<br>사진은 이 브라우저 안에서만 처리됩니다.${driveConfigured() ? " (연동을 켜면 내 구글드라이브에만 저장됩니다.)" : ""}</p><label class="btn primary" for="fileInput">사진 추가</label>`;
+      const canRecover = driveConfigured() && isSignedIn();
+      inner = `<h2>여행 사진을 추가하세요</h2><p>사진의 촬영 시각과 GPS 위치를 읽어 날짜별 동선을 그립니다.<br>사진은 이 브라우저 안에서만 처리됩니다.${driveConfigured() ? " (연동을 켜면 내 구글드라이브에만 저장됩니다.)" : ""}${canRecover ? "<br>이전에 드라이브에 올린 사진이 안 보이면 ‘드라이브에서 복구’를 누르세요." : ""}</p>` +
+        `<label class="btn primary" for="fileInput">사진 추가</label>${canRecover ? ` <button class="btn" id="emptyRecover">드라이브에서 복구</button>` : ""}`;
     }
     panel.innerHTML = `<div class="panel-inner"><div class="empty">${inner}</div></div>`;
     const b = $("#emptySignIn"); if (b) b.onclick = signIn;
+    const r = $("#emptyRecover"); if (r) r.onclick = recoverFromDrive;
     return;
   }
   let h = `<div class="panel-inner">`;
