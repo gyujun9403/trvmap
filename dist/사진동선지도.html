@@ -3597,7 +3597,7 @@ const state = {
 /* ---------- drive sync (구글드라이브 연동) ---------- */
 const LS_CONNECTED = "photo-route-map.drive-connected";
 const drive = {
-  ready: false, connected: false, tokenClient: null, token: null, email: null,
+  ready: false, connected: false, wasConnected: false, tokenClient: null, token: null, email: null,
   folderId: null, thumbFolderId: null, projectFileId: null, loadedRev: 0,
   status: "off", statusText: "", dirty: false,
 };
@@ -3616,11 +3616,11 @@ function initDrive() {
         client_id: GOOGLE_CLIENT_ID, scope: DRIVE_SCOPE, callback: onToken,
         error_callback: (err) => { const p = pendingToken; pendingToken = null; if (p) p.reject(new Error((err && err.type) || "로그인 취소")); },
       });
-      drive.ready = true; setSync("signedout");
-      if (localStorage.getItem(LS_CONNECTED)) {
-        requestToken(false).then(() => pullFromDrive())
-          .catch((e) => { if (isAuthError(e)) setSync("signedout"); else { setSync("error", e.message || String(e)); console.error("[drive] auto-connect", e); } });
-      }
+      drive.ready = true;
+      // GIS 토큰 모델은 조용한 토큰 획득이 없어 제스처(클릭) 없이는 팝업이 차단된다.
+      // 따라서 로드 시 자동 로그인하지 않고, 이전에 연결한 적이 있으면 복원하라고 안내만 한다.
+      drive.wasConnected = !!localStorage.getItem(LS_CONNECTED);
+      setSync("signedout");
     } else if (++tries > 40) { clearInterval(t); setSync("offline"); }
   }, 250);
 }
@@ -3635,21 +3635,22 @@ function onToken(resp) {
   drive.connected = true;
   p.resolve(resp.access_token);
 }
-function requestToken(interactive) {
+// GIS 토큰 모델: requestAccessToken 은 prompt 와 무관하게 '항상' 팝업을 연다 → 반드시 사용자 제스처에서만 호출.
+function requestToken() {
   if (pendingToken) return pendingToken.promise;
   let resolve, reject;
   const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
   pendingToken = { promise, resolve, reject };
-  try { drive.tokenClient.requestAccessToken(interactive ? {} : { prompt: "" }); }
+  try { drive.tokenClient.requestAccessToken(); }
   catch (e) { pendingToken = null; reject(e); }
   return promise;
 }
-// allowPopup: 사용자 클릭(제스처) 중에만 true. 백그라운드 자동 동기화는 false 라서
-// 토큰이 만료돼 조용히 갱신이 안 되면 팝업을 띄우지 않고(= popup_failed_to_open 회피) 깔끔히 실패시킨다.
+// allowPopup: 사용자 클릭(제스처) 중에만 true. 제스처가 없으면 토큰 요청(팝업)을 시도하지 않고 깔끔히 실패시킨다.
 let allowPopup = false;
 function ensureToken() {
   if (drive.token && drive.token.expiry > Date.now()) return Promise.resolve(drive.token.access_token);
-  return requestToken(allowPopup);
+  if (!allowPopup) return Promise.reject(new Error("로그인 필요"));
+  return requestToken();
 }
 
 /* --- REST --- */
@@ -3660,7 +3661,7 @@ function rawFetch(url, opts) {
 async function api(url, opts = {}) {
   await ensureToken();
   let resp = await rawFetch(url, opts);
-  if (resp.status === 401) { drive.token = null; await requestToken(allowPopup); resp = await rawFetch(url, opts); }
+  if (resp.status === 401) { drive.token = null; await ensureToken(); resp = await rawFetch(url, opts); }
   if (!resp.ok) { const body = (await resp.text()).slice(0, 300); console.error("[drive] " + (opts.method || "GET") + " " + url + " → " + resp.status, body); throw new Error(`Drive ${resp.status}: ${body.slice(0, 150)}`); }
   return resp;
 }
@@ -3816,7 +3817,7 @@ async function signIn() {
   if (!drive.ready) { toast("연동을 사용할 수 없습니다 (오프라인이거나 로그인 도구를 못 불러왔습니다)"); return; }
   setSync("signingin");
   allowPopup = true;
-  try { await requestToken(true); localStorage.setItem(LS_CONNECTED, "1"); await pullFromDrive(); }
+  try { await requestToken(); localStorage.setItem(LS_CONNECTED, "1"); await pullFromDrive(); }
   catch (e) {
     console.error("[drive] signIn", e);
     if (isAuthError(e)) { setSync("signedout"); toast("연동 로그인에 실패했습니다: " + (e.message || e), 6000); }
@@ -3854,7 +3855,7 @@ function renderSyncStatus() {
   inBtn.hidden = signedIn; nowBtn.hidden = !signedIn; outBtn.hidden = !signedIn;
   let t = "";
   if (drive.status === "offline") t = "로그인 도구를 불러오지 못했습니다. 인터넷 연결과 https 접속을 확인하세요.";
-  else if (!signedIn) t = "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
+  else if (!signedIn) t = drive.wasConnected ? "이전에 연결한 계정이 있습니다. ‘구글 계정으로 로그인’을 누르면 복원됩니다. (보안상 새로고침마다 한 번 눌러야 합니다)" : "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
   else if (drive.status === "reauth") t = "자동 동기화가 만료됐습니다. 아래 ‘지금 동기화’를 눌러 주세요.";
   else t = (drive.email ? drive.email + " · " : "") + (drive.status === "syncing" ? (drive.statusText || "동기화 중…") : drive.status === "error" ? ("오류: " + drive.statusText) : "동기화됨");
   info.textContent = t;
