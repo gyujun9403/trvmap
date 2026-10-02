@@ -3776,21 +3776,27 @@ async function pullFromDrive() {
     drive.loadedRev = proj.rev || 0;
     ingestIndex(proj.photos);
     saveNow();
-    computeDays();
-    if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
-    render();
-    const toLoad = state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed);
-    // 썸네일은 드라이브에서 내려받느라 시간이 걸린다 → 다 받을 때까지 '불러오는 중' 유지(pumpThumbs가 완료 시 '동기화됨'으로)
-    if (toLoad.length) { drive.loading = true; setSync("syncing", `사진 불러오는 중 0/${toLoad.length}`); queueThumbs(toLoad); }
-    else setSync("synced");
   } else {
     drive.loadedRev = 0;
-    // 원격에 아직 프로젝트가 없을 때만 올림. 올릴 로컬 내용이 없으면 빈 프로젝트로 덮어쓰지 않는다(기존 데이터 보호).
+  }
+  // 목록(project.json)에 없는 원본이 폴더에 있으면 자동 복구(가벼운 목록 조회로 확인, 있을 때만 내려받음).
+  let recovered = 0;
+  try { recovered = await recoverCore(); } catch (e) { console.warn("[reconcile]", e); }
+  if (recovered) { const rev = (drive.loadedRev || 0) + 1; try { await saveProject(buildProject(rev)); drive.loadedRev = rev; drive.dirty = false; } catch (e) {} }
+  // 원격에 아무것도 없고 올릴 로컬 내용도 없으면 빈 프로젝트로 덮어쓰지 않는다(기존 데이터 보호).
+  if (!proj && !recovered) {
     const hasLocal = state.photos.some((p) => p.file) ||
       Object.keys(state.store.photoNotes).length || Object.keys(state.store.groupNotes).length || Object.keys(state.store.dayNotes).length;
-    if (hasLocal) await pushToDrive(true);
-    else setSync("synced");
+    if (hasLocal) { await pushToDrive(true); return; }
   }
+  computeDays();
+  if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
+  render();
+  if (recovered) toast(`드라이브에서 ${recovered}장 복구했습니다`, 4000);
+  const toLoad = state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed);
+  // 썸네일은 드라이브에서 내려받느라 시간이 걸린다 → 다 받을 때까지 '불러오는 중' 유지(pumpThumbs가 완료 시 '동기화됨'으로)
+  if (toLoad.length) { drive.loading = true; setSync("syncing", `사진 불러오는 중 0/${toLoad.length}`); queueThumbs(toLoad); }
+  else setSync("synced");
 }
 let pushing = false, pushQueued = false, syncTimer = null;
 function scheduleSync() { if (!isSignedIn()) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => pushToDrive(), 1200); }
@@ -3877,42 +3883,51 @@ async function syncNow() {
   catch (e) { setSync("error", e.message); toast("동기화 실패: " + (e.message || e), 5000); }
   finally { allowPopup = false; }
 }
-// 복구: project.json 이 비었거나 어긋났을 때, 드라이브 폴더의 실제 사진들을 스캔해 목록을 다시 만든다.
+// 복구 코어: 폴더에 있는데 목록(state)에 없는 원본만 골라, 앞 1MB의 EXIF로 키를 복원해 목록에 추가한다.
+// 가벼운 목록 조회로 '빠진 게 있는지'부터 확인하고, 있을 때만 내려받으므로 매 로드마다 자동으로 불러도 부담이 적다.
+async function recoverCore() {
+  const folderId = await ensureFolder();
+  const origs = await driveListImages(folderId);
+  const known = new Set(state.photos.map((p) => p.originalFileId).filter(Boolean));
+  const missing = origs.filter((f) => !known.has(f.id));
+  if (!missing.length) return 0;
+  const thumbs = await driveListImages(await ensureThumbFolder());
+  const thumbByName = new Map(thumbs.map((t) => [t.name, t.id]));
+  let found = 0;
+  for (let i = 0; i < missing.length; i++) {
+    const f = missing[i];
+    progress(`드라이브에서 복구 중 ${i + 1}/${missing.length}`, i / missing.length);
+    try {
+      const part = await driveDownloadRange(f.id, 1048576); // 앞 1MB 만 받아 EXIF(촬영시각·GPS) 판독
+      const m = await readMeta(new File([part], f.name, { type: f.mimeType }));
+      const key = `${f.name}|${fmtStamp(m.time)}`;
+      const thumbFileId = thumbByName.get(sanitize(key) + ".jpg") || null;
+      const ex = state.byKey.get(key);
+      if (ex) { ex.originalFileId = f.id; ex.thumbFileId = ex.thumbFileId || thumbFileId; }
+      else {
+        const p = photoFromRecord({ key, name: f.name, time: m.time.toISOString(), lat: m.lat, lng: m.lng, timeEstimated: m.est, make: m.make, model: m.model, mime: f.mimeType, size: f.size, originalFileId: f.id, thumbFileId });
+        state.photos.push(p); state.byKey.set(key, p); found++;
+      }
+    } catch (e) { console.warn("[recover]", f.name, e); }
+  }
+  progress(null);
+  return found;
+}
+// 수동 복구(메뉴/빈 화면 버튼): 자동 복구가 놓쳤을 때를 위한 보조 경로. 제스처라 필요하면 재인증 가능.
 async function recoverFromDrive() {
   if (!isSignedIn()) { signIn(); return; }
   allowPopup = true;
   try {
     await ensureToken();
     setSync("syncing", "드라이브에서 복구 중…");
-    const folderId = await ensureFolder();
-    const thumbFolderId = await ensureThumbFolder();
-    const [origs, thumbs] = [await driveListImages(folderId), await driveListImages(thumbFolderId)];
-    const thumbByName = new Map(thumbs.map((t) => [t.name, t.id]));
-    let found = 0;
-    for (let i = 0; i < origs.length; i++) {
-      const f = origs[i];
-      progress(`복구 중 ${i + 1}/${origs.length}`, i / origs.length);
-      try {
-        const part = await driveDownloadRange(f.id, 1048576); // 앞 1MB 만 받아 EXIF(촬영시각·GPS) 판독
-        const m = await readMeta(new File([part], f.name, { type: f.mimeType }));
-        const key = `${f.name}|${fmtStamp(m.time)}`;
-        const thumbFileId = thumbByName.get(sanitize(key) + ".jpg") || null;
-        const ex = state.byKey.get(key);
-        if (ex) { ex.originalFileId = f.id; ex.thumbFileId = ex.thumbFileId || thumbFileId; }
-        else {
-          const p = photoFromRecord({ key, name: f.name, time: m.time.toISOString(), lat: m.lat, lng: m.lng, timeEstimated: m.est, make: m.make, model: m.model, mime: f.mimeType, size: f.size, originalFileId: f.id, thumbFileId });
-          state.photos.push(p); state.byKey.set(key, p); found++;
-        }
-      } catch (e) { console.warn("[recover]", f.name, e); }
-    }
-    progress(null);
+    const found = await recoverCore();
     computeDays();
     if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
     render();
-    const rev = (drive.loadedRev || 0) + 1; await saveProject(buildProject(rev)); drive.loadedRev = rev; drive.dirty = false;
+    if (found) { const rev = (drive.loadedRev || 0) + 1; await saveProject(buildProject(rev)); drive.loadedRev = rev; drive.dirty = false; }
     const toLoad = state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed);
     if (toLoad.length) { drive.loading = true; setSync("syncing", `사진 불러오는 중 0/${toLoad.length}`); queueThumbs(toLoad); } else setSync("synced");
-    toast(`드라이브에서 ${found}장 복구했습니다`, 5000);
+    toast(found ? `드라이브에서 ${found}장 복구했습니다` : "복구할 새 사진이 없습니다", 5000);
   } catch (e) {
     progress(null); console.error("[drive] recover", e);
     setSync("error", e.message); toast("복구 실패: " + (e.message || e), 6000);
