@@ -774,6 +774,10 @@ button { cursor: pointer; }
 .day-tab .n { color: var(--muted); font-size: 12px; }
 .day-tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .day-tab[aria-selected="true"] .n { color: inherit; opacity: .7; }
+.places { background: var(--surface-2); }
+.places .day-tab { font-weight: 600; }
+.places .day-tab .pin { color: var(--accent); font-size: 11px; }
+.places .day-tab[aria-selected="true"] .pin { color: inherit; }
 
 /* Main layout */
 .layout { flex: 1 1 0; display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); min-height: 0; }
@@ -820,6 +824,14 @@ button { cursor: pointer; }
 .gsub { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 10px; }
 .gsub a { color: var(--accent); text-decoration: none; }
 .gsub a:hover { text-decoration: underline; }
+.gplace { max-width: 140px; height: 22px; padding: 0 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); font-size: 12px; color: var(--muted); }
+.ptitle {
+  width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 2px 0; font-size: 20px; font-weight: 700; letter-spacing: -.01em;
+}
+.ptitle:focus { border-bottom-color: var(--accent); outline: none; }
+.ptitle::placeholder { color: var(--muted); opacity: .8; font-weight: 600; }
+.hint { font-size: 12px; color: var(--muted); }
+.others { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
 .small-btn {
   border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--muted); white-space: nowrap;
 }
@@ -851,6 +863,7 @@ button { cursor: pointer; }
 }
 .daycard:hover { border-color: var(--c); }
 .daycard .sw { width: 12px; height: 12px; border-radius: 50%; background: var(--c); grid-row: span 2; }
+.placecard .sw { border-radius: 3px; transform: rotate(45deg) scale(.85); }
 .daycard h3 { margin: 0; font-size: 15px; }
 .daycard p { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .empty { padding: 28px 16px; text-align: center; color: var(--muted); display: grid; gap: 10px; justify-items: center; }
@@ -862,7 +875,8 @@ button { cursor: pointer; }
   font: 700 12px/1 "IBM Plex Mono", ui-monospace, monospace; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35);
 }
 .gmark.sel span { transform: scale(1.25); box-shadow: 0 0 0 3px rgba(0,0,0,.25); }
-.gmark.day span { width: auto; padding: 0 8px; border-radius: 14px; }
+.gmark.day span { width: auto; padding: 0 8px; border-radius: 14px; white-space: nowrap; }
+.gmark.place span { width: auto; padding: 0 10px; border-radius: 14px; height: 30px; font: 600 13px/1 "IBM Plex Sans KR", system-ui, sans-serif; white-space: nowrap; }
 .leaflet-tooltip { font-family: var(--font-body); font-size: 12px; }
 
 /* Lightbox */
@@ -969,6 +983,7 @@ button { cursor: pointer; }
         <div class="setting"><label for="setDayStart">하루 시작 시각</label><input type="number" id="setDayStart" min="0" max="8" step="1"><small>이 시각 전 사진은 전날로 칩니다 (새벽 귀가 대비)</small></div>
         <div class="setting"><label for="setDist">묶음 거리 (m)</label><input type="number" id="setDist" min="20" max="2000" step="10"><small>직전 사진과 이보다 멀면 새 묶음</small></div>
         <div class="setting"><label for="setGap">묶음 시간 간격 (분)</label><input type="number" id="setGap" min="1" max="240" step="1"><small>직전 사진과 이보다 오래 떨어지면 새 묶음</small></div>
+        <div class="setting"><label for="setPlaceKm">여행지 구분 거리 (km)</label><input type="number" id="setPlaceKm" min="5" max="500" step="5"><small>묶음이 기존 여행지 중심에서 이보다 멀면 새 여행지 (도시 단위)</small></div>
         <hr>
         <button class="item" id="btnResetBreaks">수동으로 나누고 합친 것 되돌리기<small>메모는 그대로 두고 자동 묶음으로 돌아갑니다</small></button>
       </div>
@@ -976,6 +991,7 @@ button { cursor: pointer; }
   </div>
 </header>
 <div class="banner" id="demoBanner" hidden><b>예시 화면</b> · 교토 2일 가상 데이터입니다. 사진을 추가하면 예시는 사라지고, 예시에 적은 메모는 저장되지 않습니다.</div>
+<nav class="days places" id="placeTabs" role="tablist" aria-label="여행지" hidden></nav>
 <nav class="days" id="dayTabs" role="tablist" aria-label="날짜"></nav>
 <main class="layout">
   <aside class="panel" id="panel"></aside>
@@ -3550,11 +3566,11 @@ const DRIVE_PROJECT_NAME = "project.json";
 
 /* ---------- store (메모·설정) ---------- */
 function emptyStore() {
-  return { v: 1, photoNotes: {}, groupNotes: {}, dayNotes: {}, breaks: {}, settings: { dayStartHour: 4, gapMin: 30, distM: 250 }, savedAt: null };
+  return { v: 1, photoNotes: {}, groupNotes: {}, dayNotes: {}, breaks: {}, placeNames: {}, groupPlace: {}, settings: { dayStartHour: 4, gapMin: 30, distM: 250, placeKm: 30 }, savedAt: null };
 }
 function mergeStore(base, s) {
   const out = emptyStore();
-  for (const k of ["photoNotes", "groupNotes", "dayNotes", "breaks"]) out[k] = Object.assign({}, base[k], s && s[k]);
+  for (const k of ["photoNotes", "groupNotes", "dayNotes", "breaks", "placeNames", "groupPlace"]) out[k] = Object.assign({}, base[k], s && s[k]);
   out.settings = Object.assign({}, base.settings, s && s.settings);
   out.savedAt = (s && s.savedAt) || base.savedAt;
   return out;
@@ -3592,8 +3608,8 @@ function renderSaveStatus() {
 
 /* ---------- state ---------- */
 const state = {
-  photos: [], byKey: new Map(), days: [], dayByKey: new Map(),
-  current: "all", selectedGroup: null, demo: false, store: loadStore(), lb: null,
+  photos: [], byKey: new Map(), days: [], dayByKey: new Map(), places: [], placeById: new Map(),
+  place: "all", current: "all", selectedGroup: null, demo: false, store: loadStore(), lb: null,
 };
 
 /* ---------- drive sync (구글드라이브 연동) ---------- */
@@ -4032,21 +4048,100 @@ function computeDays() {
         const o = state.store.breaks[p.key];
         newGroup = o === true ? true : o === false ? false : auto;
       }
-      if (newGroup) { cur = { key: p.key, photos: [], idx: groups.length }; groups.push(cur); lastGps = null; }
+      if (newGroup) { cur = { key: p.key, day: key, photos: [], idx: groups.length }; groups.push(cur); lastGps = null; }
       cur.photos.push(p); p.groupKey = cur.key;
       if (hasGps(p)) lastGps = p;
     }
-    let dist = 0, prevPt = null, gpsCount = 0;
-    for (const p of photos) if (hasGps(p)) { gpsCount++; const pt = [p.lat, p.lng]; if (prevPt) dist += hav(prevPt, pt); prevPt = pt; }
     for (const g of groups) {
       const gp = g.photos.filter(hasGps);
       g.center = gp.length ? [gp.reduce((a, p) => a + p.lat, 0) / gp.length, gp.reduce((a, p) => a + p.lng, 0) / gp.length] : null;
+      g.gps = gp.length;
       g.start = g.photos[0].time; g.end = g.photos[g.photos.length - 1].time;
     }
-    return { key, photos, groups, color: DAY_COLORS[i % DAY_COLORS.length], index: i, dist, gpsCount };
+    return Object.assign({ key, photos, groups, color: DAY_COLORS[i % DAY_COLORS.length], index: i }, routeStats(photos));
   });
   state.dayByKey = new Map(state.days.map((d) => [d.key, d]));
-  if (state.current !== "all" && !state.dayByKey.has(state.current)) state.current = "all";
+  computePlaces();
+  if (state.place !== "all" && !state.placeById.has(state.place)) state.place = "all";
+  if (state.current !== "all" && !viewDays().some((d) => d.key === state.current)) state.current = "all";
+}
+function routeStats(photos) {
+  let dist = 0, prevPt = null, gpsCount = 0;
+  for (const p of photos) if (hasGps(p)) { gpsCount++; const pt = [p.lat, p.lng]; if (prevPt) dist += hav(prevPt, pt); prevPt = pt; }
+  return { dist, gpsCount };
+}
+
+/* ---------- places (여행지: 도시 단위) ----------
+ * 묶음 중심을 시간순으로 훑으며 기존 여행지 '중심'에서 placeKm 안이면 합류, 아니면 새 여행지(키 = 그 묶음 키).
+ * 가장 가까운 사진이 아니라 중심과 비교하므로 기차 안에서 찍은 사진이 도시들을 사슬처럼 잇지 않는다.
+ * 사진이 TRANSIT_MIN장 미만인 자동 여행지는 '이동 중'으로 모으고, 같은 이름을 붙인 여행지는 하나로 합쳐 보인다.
+ * groupPlace[묶음 키] = 여행지 키 로 손으로 옮길 수 있다("m:" 키 = 손으로 새로 만든 여행지, 자동 묶음을 끌어오지 않음).
+ */
+const TRANSIT = "transit", TRANSIT_MIN = 3;
+function computePlaces() {
+  const R = state.store.settings.placeKm * 1000, manual = state.store.groupPlace, names = state.store.placeNames;
+  const groups = state.days.flatMap((d) => d.groups);
+  const clusters = new Map();
+  const cl = (key) => { let c = clusters.get(key); if (!c) { c = { key, lat: 0, lng: 0, w: 0, groups: [], manual: false }; clusters.set(key, c); } return c; };
+  const join = (c, g) => { c.groups.push(g); g.cluster = c.key; if (g.center) { c.lat += g.center[0] * g.gps; c.lng += g.center[1] * g.gps; c.w += g.gps; } };
+  for (const g of groups) { g.cluster = null; const k = manual[g.key]; if (k) { const c = cl(k); c.manual = true; join(c, g); } }
+  for (const g of groups) {
+    if (g.cluster || !g.center) continue;
+    let best = null, bd = Infinity;
+    for (const c of clusters.values()) {
+      if (!c.w || c.key === TRANSIT || c.key.startsWith("m:")) continue;
+      const d = hav([c.lat / c.w, c.lng / c.w], g.center); if (d < bd) { bd = d; best = c; }
+    }
+    join(best && bd <= R ? best : cl(g.key), g);
+  }
+  // 위치 없는 묶음: 같은 날 앞(없으면 뒤) 묶음을 따르고, 그래도 없으면 앞뒤 날짜를 따른다
+  const fill = (list, sameDay) => { let last = null; for (const g of list) { if (g.cluster) last = g; else if (last && (!sameDay || last.day === g.day)) join(clusters.get(last.cluster), g); } };
+  const rev = [...groups].reverse();
+  fill(groups, true); fill(rev, true); fill(groups, false); fill(rev, false);
+  for (const g of groups) if (!g.cluster) join(cl("nogps"), g);
+  const count = (c) => c.groups.reduce((a, g) => a + g.photos.length, 0);
+  const small = (c) => !c.manual && c.key !== TRANSIT && count(c) < TRANSIT_MIN;
+  if ([...clusters.values()].some((c) => !small(c))) {
+    for (const c of [...clusters.values()]) if (small(c)) { clusters.delete(c.key); for (const g of c.groups) join(cl(TRANSIT), g); }
+  }
+  const byId = new Map();
+  for (const c of clusters.values()) {
+    const name = c.key === TRANSIT ? "" : (names[c.key] || "").trim();
+    const id = c.key === TRANSIT ? TRANSIT : name ? "n:" + name : c.key;
+    let pl = byId.get(id);
+    if (!pl) { pl = { id, name, keys: [], groups: [], lat: 0, lng: 0, w: 0 }; byId.set(id, pl); }
+    pl.keys.push(c.key); pl.groups.push(...c.groups); pl.lat += c.lat; pl.lng += c.lng; pl.w += c.w;
+  }
+  const places = [...byId.values()];
+  for (const pl of places) {
+    pl.groups.sort((a, b) => a.start - b.start);
+    pl.start = pl.groups[0].start; pl.end = pl.groups.reduce((a, g) => (g.end > a ? g.end : a), pl.start);
+    pl.center = pl.w ? [pl.lat / pl.w, pl.lng / pl.w] : null;
+    pl.count = pl.groups.reduce((a, g) => a + g.photos.length, 0);
+    pl.days = [...new Set(pl.groups.map((g) => g.day))];
+    for (const g of pl.groups) { g.place = pl.id; for (const p of g.photos) p.place = pl.id; }
+  }
+  places.sort((a, b) => (a.id === TRANSIT) - (b.id === TRANSIT) || a.start - b.start);
+  let n = 0;
+  for (const pl of places) { if (pl.id !== TRANSIT) n++; pl.label = pl.id === TRANSIT ? "이동 중" : pl.name || `여행지 ${n}`; }
+  state.places = places;
+  state.placeById = new Map(places.map((pl) => [pl.id, pl]));
+}
+const multiPlace = () => state.places.length > 1;
+// 지금 고른 여행지에 속한 날짜들 / 한 날짜에서 그 여행지 부분만
+function viewDays() {
+  const pl = state.place !== "all" && state.placeById.get(state.place);
+  return pl ? pl.days.map((k) => state.dayByKey.get(k)) : state.days;
+}
+function viewOf(d) {
+  if (state.place === "all") return d;
+  const groups = d.groups.filter((g) => g.place === state.place);
+  const photos = groups.flatMap((g) => g.photos);
+  return Object.assign({}, d, { groups, photos }, routeStats(photos));
+}
+function placeRange(pl) {
+  const a = pl.days[0], b = pl.days[pl.days.length - 1];
+  return a === b ? dayLabel(a, true) : `${dayLabel(a, true)} – ${dayLabel(b, true)}`;
 }
 function findGroup(dayKey, gkey) { const d = state.dayByKey.get(dayKey); return d && d.groups.find((g) => g.key === gkey); }
 function groupTitle(gkey) { const n = state.store.groupNotes[gkey]; return (n && n.title) || ""; }
@@ -4056,14 +4151,23 @@ function render(opts = {}) {
   renderTabs(); renderPanel(opts); renderMap(opts.fit !== false); renderSaveStatus();
 }
 function renderTabs() {
+  const pt = $("#placeTabs");
+  pt.hidden = !multiPlace();
+  if (multiPlace()) {
+    let h = `<button class="day-tab" role="tab" aria-selected="${state.place === "all"}" data-place="all">모든 여행지</button>`;
+    for (const pl of state.places) {
+      h += `<button class="day-tab" role="tab" aria-selected="${state.place === pl.id}" data-place="${esc(pl.id)}"><span class="pin">◆</span>${esc(pl.label)} <span class="n">${pl.count}장</span></button>`;
+    }
+    pt.innerHTML = h;
+  }
   const el = $("#dayTabs");
-  const total = state.photos.length;
-  let h = `<button class="day-tab" role="tab" aria-selected="${state.current === "all"}" data-day="all">전체 <span class="n">${total}장</span></button>`;
-  for (const d of state.days) {
-    h += `<button class="day-tab" role="tab" aria-selected="${state.current === d.key}" data-day="${d.key}" style="--c:${d.color}"><span class="sw"></span>${esc(dayLabel(d.key, true))} <span class="n">${d.photos.length}장</span></button>`;
+  const pl = state.placeById.get(state.place);
+  let h = `<button class="day-tab" role="tab" aria-selected="${state.current === "all"}" data-day="all">전체 <span class="n">${pl ? pl.count : state.photos.length}장</span></button>`;
+  for (const d of viewDays()) {
+    h += `<button class="day-tab" role="tab" aria-selected="${state.current === d.key}" data-day="${d.key}" style="--c:${d.color}"><span class="sw"></span>${esc(dayLabel(d.key, true))} <span class="n">${viewOf(d).photos.length}장</span></button>`;
   }
   el.innerHTML = h;
-  const sel = el.querySelector('[aria-selected="true"]'); if (sel) sel.scrollIntoView({ block: "nearest", inline: "nearest" });
+  for (const row of [pt, el]) { const sel = row.querySelector('[aria-selected="true"]'); if (sel && !row.hidden) sel.scrollIntoView({ block: "nearest", inline: "nearest" }); }
 }
 function thumbHtml(p) {
   const note = state.store.photoNotes[p.key];
@@ -4071,6 +4175,15 @@ function thumbHtml(p) {
     (p.thumbUrl ? `<img src="${p.thumbUrl}" alt="" loading="lazy">` : `<span class="ph">${p.thumbFailed ? "미리보기 불가" : (p.file ? "변환 중" : "불러오는 중")}</span>`) +
     `<span class="t">${fmtTime(p.time)}</span>` + (note ? `<span class="dot" aria-label="메모 있음"></span>` : "") +
     (hasGps(p) ? "" : `<span class="nog">위치 없음</span>`) + `</button>`;
+}
+// 묶음 카드의 여행지 선택: 자동 판정이 틀렸을 때 손으로 옮긴다
+function placeSelect(g) {
+  if (!multiPlace() && !state.store.groupPlace[g.key]) return "";
+  let o = state.places.map((pl) => `<option value="${esc(pl.id)}"${pl.id === g.place ? " selected" : ""}>${esc(pl.label)}</option>`).join("");
+  if (!state.placeById.has(TRANSIT)) o += `<option value="${TRANSIT}">이동 중</option>`;
+  o += `<option value="new">새 여행지로 분리</option>`;
+  if (state.store.groupPlace[g.key]) o += `<option value="auto">자동 판정으로 되돌리기</option>`;
+  return `<select class="gplace" data-gplace="${esc(g.key)}" aria-label="묶음 ${g.idx + 1} 여행지">${o}</select>`;
 }
 function renderPanel(opts = {}) {
   const panel = $("#panel");
@@ -4093,22 +4206,48 @@ function renderPanel(opts = {}) {
     return;
   }
   let h = `<div class="panel-inner">`;
-  if (state.current === "all") {
+  const dayCard = (d0) => {
+    const d = viewOf(d0);
+    const titles = d.groups.map((g) => groupTitle(g.key)).filter(Boolean);
+    const dn = state.store.dayNotes[d.key];
+    const sub = titles.length ? titles.join(" → ") : `${d.groups.length}개 묶음`;
+    return `<button class="daycard" data-day="${d.key}" style="--c:${d.color}"><span class="sw"></span><h3>${esc(dayLabel(d.key))}</h3>
+      <p>${fmtTime(d.photos[0].time)}–${fmtTime(d.photos[d.photos.length - 1].time)} · ${d.photos.length}장 · 사진 사이 직선거리 ${fmtDist(d.dist)}<br>${esc(sub)}${dn ? `<br>${esc(dn.slice(0, 80))}${dn.length > 80 ? "…" : ""}` : ""}</p></button>`;
+  };
+  const curPlace = state.placeById.get(state.place);
+  if (state.current === "all" && curPlace) {
+    const pl = curPlace;
+    const photos = pl.groups.flatMap((g) => g.photos);
+    const head = pl.id === TRANSIT
+      ? `<h2>이동 중</h2><p class="hint">사진이 ${TRANSIT_MIN}장이 안 되는 곳(기차·차 안 등)을 모았습니다. 묶음 카드의 여행지 선택으로 다른 여행지에 옮길 수 있습니다.</p>`
+      : `<input class="ptitle" data-pname="${esc(pl.id)}" value="${esc(pl.name)}" placeholder="${esc(pl.label)} · 이름 입력 (예: 로마)" aria-label="여행지 이름">
+        <p class="hint">같은 이름을 붙인 여행지는 하나로 합쳐집니다.</p>`;
+    h += `<div class="dayhead">${head}
+      <div class="stats"><span class="mono"><b>${esc(placeRange(pl))}</b></span><span><b>${pl.days.length}</b>일</span><span>사진 <b>${pl.count}</b>장</span><span>묶음 <b>${pl.groups.length}</b>개</span><span>위치 있는 사진 <b>${photos.filter(hasGps).length}</b>장</span></div></div>`;
+    for (const d of viewDays()) h += dayCard(d);
+  } else if (state.current === "all") {
     const first = state.days[0], last = state.days[state.days.length - 1];
     const gps = state.photos.filter(hasGps).length;
     h += `<div class="dayhead"><h2>${esc(dayLabel(first.key))}${state.days.length > 1 ? ` – ${esc(dayLabel(last.key, true))}` : ""}</h2>
-      <div class="stats"><span><b>${state.days.length}</b>일</span><span>사진 <b>${state.photos.length}</b>장</span><span>위치 있는 사진 <b>${gps}</b>장</span></div></div>`;
-    for (const d of state.days) {
-      const titles = d.groups.map((g) => groupTitle(g.key)).filter(Boolean);
-      const dn = state.store.dayNotes[d.key];
-      const sub = titles.length ? titles.join(" → ") : `${d.groups.length}개 묶음`;
-      h += `<button class="daycard" data-day="${d.key}" style="--c:${d.color}"><span class="sw"></span><h3>${esc(dayLabel(d.key))}</h3>
-        <p>${fmtTime(d.photos[0].time)}–${fmtTime(d.photos[d.photos.length - 1].time)} · ${d.photos.length}장 · 사진 사이 직선거리 ${fmtDist(d.dist)}<br>${esc(sub)}${dn ? `<br>${esc(dn.slice(0, 80))}${dn.length > 80 ? "…" : ""}` : ""}</p></button>`;
+      <div class="stats"><span><b>${state.days.length}</b>일</span>${multiPlace() ? `<span>여행지 <b>${state.places.filter((p) => p.id !== TRANSIT).length}</b>곳</span>` : ""}<span>사진 <b>${state.photos.length}</b>장</span><span>위치 있는 사진 <b>${gps}</b>장</span></div></div>`;
+    if (multiPlace()) {
+      h += `<div class="label">여행지</div>`;
+      for (const pl of state.places) {
+        const titles = pl.groups.map((g) => groupTitle(g.key)).filter(Boolean);
+        h += `<button class="daycard placecard" data-place="${esc(pl.id)}" style="--c:var(--accent)"><span class="sw"></span><h3>${esc(pl.label)}</h3>
+          <p>${esc(placeRange(pl))} · ${pl.days.length}일 · ${pl.count}장${titles.length ? `<br>${esc(titles.slice(0, 6).join(" → "))}${titles.length > 6 ? " …" : ""}` : ""}</p></button>`;
+      }
+      h += `<div class="label">날짜</div>`;
     }
+    for (const d of state.days) h += dayCard(d);
   } else {
-    const d = state.dayByKey.get(state.current);
-    h += `<div class="dayhead" style="--c:${d.color}"><h2>${esc(dayLabel(d.key))}</h2>
+    const full = state.dayByKey.get(state.current);
+    const d = viewOf(full);
+    const others = multiPlace() ? state.places.filter((pl) => pl.id !== state.place && full.groups.some((g) => g.place === pl.id)) : [];
+    const othersHtml = others.length ? `<div class="others">${state.place === "all" ? "이날 여행지" : "이날 다른 여행지"} ${others.map((pl) => `<button class="small-btn" data-goplace="${esc(pl.id)}">${esc(pl.label)} ${full.groups.filter((g) => g.place === pl.id).reduce((a, g) => a + g.photos.length, 0)}장</button>`).join("")}</div>` : "";
+    h += `<div class="dayhead" style="--c:${d.color}">${curPlace ? `<div class="label">${esc(curPlace.label)}</div>` : ""}<h2>${esc(dayLabel(d.key))}</h2>
       <div class="stats"><span class="mono"><b>${fmtTime(d.photos[0].time)}–${fmtTime(d.photos[d.photos.length - 1].time)}</b></span><span>사진 <b>${d.photos.length}</b>장</span><span>묶음 <b>${d.groups.length}</b>개</span><span>사진 사이 직선거리 <b>${fmtDist(d.dist)}</b></span>${d.gpsCount < d.photos.length ? `<span>위치 없음 <b>${d.photos.length - d.gpsCount}</b>장</span>` : ""}</div>
+      ${othersHtml}
       <label class="label" for="dayNote">이날 메모</label>
       <textarea class="note" id="dayNote" data-daynote="${d.key}" placeholder="하루 전체에 대한 메모 (자동 저장)">${esc(state.store.dayNotes[d.key] || "")}</textarea></div>`;
     let prev = null;
@@ -4126,9 +4265,9 @@ function renderPanel(opts = {}) {
           <button class="gnum${g.center ? "" : " nogps"}" data-act="focus" title="${g.center ? "지도에서 보기" : "위치 정보 없음"}">${g.idx + 1}</button>
           <div class="gmeta">
             <input class="gtitle" id="gt-${id}" data-gtitle="${esc(g.key)}" value="${esc(gn.title || "")}" placeholder="장소 이름 입력" aria-label="묶음 ${g.idx + 1} 장소 이름">
-            <div class="gsub"><span class="mono">${fmtTime(g.start)}${g.end - g.start >= 60000 ? `–${fmtTime(g.end)}` : ""}</span><span>${g.photos.length}장</span>${g.center ? `<a href="${gmapsUrl(g.center[0], g.center[1])}" target="_blank" rel="noopener">구글맵에서 열기</a>` : "<span>위치 없음</span>"}</div>
+            <div class="gsub"><span class="mono">${fmtTime(g.start)}${g.end - g.start >= 60000 ? `–${fmtTime(g.end)}` : ""}</span><span>${g.photos.length}장</span>${g.center ? `<a href="${gmapsUrl(g.center[0], g.center[1])}" target="_blank" rel="noopener">구글맵에서 열기</a>` : "<span>위치 없음</span>"}${placeSelect(g)}</div>
           </div>
-          ${g.idx > 0 ? `<button class="small-btn" data-act="merge" title="바로 앞 묶음과 하나로 합칩니다">앞 묶음과 합치기</button>` : "<span></span>"}
+          ${g.idx > 0 && (state.place === "all" || full.groups[g.idx - 1].place === g.place) ? `<button class="small-btn" data-act="merge" title="바로 앞 묶음과 하나로 합칩니다">앞 묶음과 합치기</button>` : "<span></span>"}
         </div>
         <div class="thumbs">${g.photos.map(thumbHtml).join("")}</div>
         ${pn.length ? `<ul class="pnotes">${pn.map((p) => `<li><button data-photo="${esc(p.key)}">${fmtTime(p.time)}</button><span>${esc(state.store.photoNotes[p.key])}</span></li>`).join("")}</ul>` : ""}
@@ -4169,13 +4308,14 @@ function renderMap(fit) {
   if (!map) return;
   lg.clearLayers(); markerByGroup.clear();
   const bounds = [];
-  const days = state.current === "all" ? state.days : [state.dayByKey.get(state.current)].filter(Boolean);
+  const days = (state.current === "all" ? viewDays() : [state.dayByKey.get(state.current)].filter(Boolean)).map(viewOf);
+  const placeMarkers = state.current === "all" && state.place === "all" && multiPlace();
   for (const d of days) {
     const pts = d.photos.filter(hasGps).map((p) => [p.lat, p.lng]);
     bounds.push(...pts);
     if (pts.length > 1) L.polyline(pts, { color: d.color, weight: state.current === "all" ? 3 : 4, opacity: 0.85, lineJoin: "round" }).addTo(lg);
     if (state.current === "all") {
-      if (pts.length) {
+      if (pts.length && !placeMarkers) {
         const m = L.marker(pts[0], { icon: markerIcon(d.color, `${d.index + 1}일차`, "day") }).addTo(lg);
         m.bindTooltip(dayLabel(d.key), { direction: "top", offset: [0, -14] });
         m.on("click", () => selectDay(d.key));
@@ -4195,17 +4335,59 @@ function renderMap(fit) {
       markerByGroup.set(g.key, m);
     }
   }
+  // 모든 여행지 보기: 날짜 마커 대신 여행지 이름 마커(누르면 그 여행지로)
+  if (placeMarkers) {
+    for (const pl of state.places) {
+      if (!pl.center || pl.id === TRANSIT) continue;
+      const m = L.marker(pl.center, { icon: markerIcon("#1b2220", pl.label, "day place"), zIndexOffset: 600 }).addTo(lg);
+      m.bindTooltip(`${placeRange(pl)} · ${pl.count}장`, { direction: "top", offset: [0, -16] });
+      m.on("click", () => selectPlace(pl.id));
+    }
+  }
   map.invalidateSize(false); // 사진이 없을 때도 컨테이너 높이에 맞춰 타일을 다시 그린다(빈 회색 영역 방지)
   if (fit && bounds.length) {
     const animate = mapFitted; // 첫 맞춤은 즉시, 이후(날짜/탭 전환)에는 부드럽게 확대
+    const pad = placeMarkers ? [70, 70] : [40, 40]; // 여행지 이름 마커는 넓어서 가장자리에서 잘리지 않게 여백을 더 준다
     if (bounds.length === 1) animate ? map.flyTo(bounds[0], 16, { duration: 0.7 }) : map.setView(bounds[0], 16);
-    else animate ? map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 17, duration: 0.7 }) : map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+    else animate ? map.flyToBounds(bounds, { padding: pad, maxZoom: 17, duration: 0.7 }) : map.fitBounds(bounds, { padding: pad, maxZoom: 17 });
     mapFitted = true;
   }
 }
 function selectDay(key) {
   state.current = key; state.selectedGroup = null;
   render();
+}
+function selectPlace(id, keepDay) {
+  state.place = id; state.selectedGroup = null;
+  if (!keepDay || !viewDays().some((d) => d.key === state.current)) state.current = "all";
+  render();
+}
+function setGroupPlace(gkey, val) {
+  const gp = state.store.groupPlace;
+  if (val === "auto") delete gp[gkey];
+  else if (val === "new") gp[gkey] = "m:" + gkey;
+  else if (val === TRANSIT) gp[gkey] = TRANSIT;
+  else { const pl = state.placeById.get(val); if (!pl) return; gp[gkey] = pl.keys[0]; }
+  saveSoon(); computeDays();
+  const g = state.days.flatMap((d) => d.groups).find((x) => x.key === gkey);
+  const pl = g && state.placeById.get(g.place);
+  render({ keepScroll: true, fit: false });
+  toast(val === "auto" ? "자동 판정으로 되돌렸습니다" : `이 묶음을 ‘${pl ? pl.label : "?"}’(으)로 옮겼습니다`);
+}
+// 여행지 이름: 입력 중에는 저장만 하고, 확정(change) 때 다시 계산한다(같은 이름이면 합쳐짐)
+function setPlaceName(id, val) {
+  const pl = state.placeById.get(id); if (!pl) return;
+  for (const k of pl.keys) { if (val.trim()) state.store.placeNames[k] = val.trim(); else delete state.store.placeNames[k]; }
+  saveSoon();
+}
+function commitPlaceName(id) {
+  const pl = state.placeById.get(id); if (!pl) return;
+  const k = pl.keys[0], n = pl.keys.length;
+  computeDays();
+  const np = state.places.find((x) => x.keys.includes(k));
+  state.place = np ? np.id : "all";
+  render({ keepScroll: true, fit: false });
+  if (np && np.keys.length > n) toast(`같은 이름의 여행지와 합쳤습니다 · ${np.label}`);
 }
 function selectGroup(gkey, { fly = true, scroll = true } = {}) {
   state.selectedGroup = gkey;
@@ -4480,7 +4662,10 @@ function mergeWithPreviousFromPhoto(p) {
 }
 
 /* ---------- lightbox ---------- */
-function lbList(p) { return (state.dayByKey.get(p.dayKey) || { photos: [p] }).photos; }
+function lbList(p) {
+  const d = state.dayByKey.get(p.dayKey); if (!d) return [p];
+  return (state.place !== "all" && p.place === state.place ? viewOf(d) : d).photos;
+}
 let lbToken = 0;
 async function openLightbox(pkey) {
   const p = state.byKey.get(pkey); if (!p) return;
@@ -4588,7 +4773,7 @@ function exitDemo() {
 /* ---------- settings ---------- */
 function syncSettingsInputs() {
   const s = state.store.settings;
-  $("#setDayStart").value = s.dayStartHour; $("#setDist").value = s.distM; $("#setGap").value = s.gapMin;
+  $("#setDayStart").value = s.dayStartHour; $("#setDist").value = s.distM; $("#setGap").value = s.gapMin; $("#setPlaceKm").value = s.placeKm;
 }
 function onSetting(id, field, min, max) {
   $(id).addEventListener("change", (e) => {
@@ -4603,8 +4788,11 @@ function bind() {
   $("#fileInput").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
   $("#dirInput").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
   $("#dayTabs").addEventListener("click", (e) => { const b = e.target.closest("[data-day]"); if (b) selectDay(b.dataset.day); });
+  $("#placeTabs").addEventListener("click", (e) => { const b = e.target.closest("[data-place]"); if (b) selectPlace(b.dataset.place); });
   const panel = $("#panel");
   panel.addEventListener("click", (e) => {
+    const pc = e.target.closest("[data-place]"); if (pc) { selectPlace(pc.dataset.place); return; }
+    const gp = e.target.closest("[data-goplace]"); if (gp) { selectPlace(gp.dataset.goplace, true); return; }
     const dc = e.target.closest(".daycard"); if (dc) { selectDay(dc.dataset.day); return; }
     const ph = e.target.closest("[data-photo]"); if (ph) { openLightbox(ph.dataset.photo); return; }
     const act = e.target.closest("[data-act]"); if (!act) return;
@@ -4618,10 +4806,16 @@ function bind() {
       setGroupNote(t.dataset.gtitle, "title", t.value.trim() ? t.value : "");
       const m = markerByGroup.get(t.dataset.gtitle); if (m) m.setTooltipContent(t.value || "(이름 없음)");
     } else if (t.dataset.gnote) setGroupNote(t.dataset.gnote, "text", t.value);
+    else if (t.dataset.pname) setPlaceName(t.dataset.pname, t.value);
     else if (t.dataset.daynote) {
       if (t.value) state.store.dayNotes[t.dataset.daynote] = t.value; else delete state.store.dayNotes[t.dataset.daynote];
       saveSoon();
     }
+  });
+  panel.addEventListener("change", (e) => {
+    const t = e.target;
+    if (t.dataset.gplace) setGroupPlace(t.dataset.gplace, t.value);
+    else if (t.dataset.pname) commitPlaceName(t.dataset.pname);
   });
   $("#lbNote").addEventListener("input", (e) => {
     if (!state.lb) return;
@@ -4635,6 +4829,7 @@ function bind() {
   $("#lbShowMap").onclick = () => {
     const p = state.byKey.get(state.lb); closeLightbox();
     if (p && hasGps(p)) {
+      if (state.place !== "all" && state.place !== p.place) state.place = p.place;
       if (state.current !== p.dayKey) selectDay(p.dayKey);
       selectGroup(p.groupKey, { fly: false, scroll: true });
       map.flyTo([p.lat, p.lng], 18, { duration: 0.6 });
@@ -4706,6 +4901,7 @@ function bind() {
   onSetting("#setDayStart", "dayStartHour", 0, 8);
   onSetting("#setDist", "distM", 20, 2000);
   onSetting("#setGap", "gapMin", 1, 240);
+  onSetting("#setPlaceKm", "placeKm", 5, 500);
   $("#btnResetBreaks").onclick = () => {
     $("#menuSettings").open = false; state.store.breaks = {}; saveSoon(); computeDays(); render({ fit: false });
     toast("자동 묶음으로 되돌렸습니다");

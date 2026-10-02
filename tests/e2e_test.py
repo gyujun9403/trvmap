@@ -143,6 +143,78 @@ async def test_heic_png(browser):
     await pg.close()
 
 
+async def test_places(browser):
+    print("[여행지(도시) 분리]")
+    pg, errors = await new_page(browser, viewport={"width": 1300, "height": 850})
+    files = sorted(str(f) for f in FIX.glob("T*.jpg"))
+    await pg.set_input_files("#fileInput", files)
+    await pg.wait_for_timeout(2500)
+    ptabs = pg.locator("#placeTabs .day-tab")
+    labels = [" ".join(t.split()) for t in await ptabs.all_inner_texts()]
+    check(await pg.is_visible("#placeTabs"), "여행지 탭 표시")
+    check(labels[1:] == ["◆ 여행지 1 6장", "◆ 여행지 2 6장", "◆ 여행지 3 4장", "◆ 이동 중 2장"],
+          f"로마 6 · 나폴리+폼페이 6 · 피렌체(위치 없는 사진 포함) 4 · 이동 중 2 {labels}")
+    await pg.screenshot(path=str(OUT / "places-all.png"))
+
+    # 로마 선택 → 날짜 탭이 로마 날짜만, 9/21은 로마 부분만
+    await ptabs.nth(1).click()
+    await pg.wait_for_timeout(500)
+    days = [" ".join(t.split()) for t in await pg.locator("#dayTabs .day-tab").all_inner_texts()]
+    check(len(days) == 3 and "9/20" in days[1] and "9/21" in days[2] and days[2].endswith("2장"), f"로마 날짜 탭 {days}")
+    await pg.fill(".ptitle", "로마")
+    await pg.press(".ptitle", "Enter")
+    await pg.wait_for_timeout(400)
+    check("로마" in await pg.inner_text("#placeTabs"), "여행지 이름 → 탭에 반영")
+    await pg.screenshot(path=str(OUT / "places-rome.png"))
+
+    # 로마의 9/21: 다른 여행지 바로가기
+    await pg.locator("#dayTabs .day-tab").nth(2).click()
+    await pg.wait_for_timeout(400)
+    check(await pg.locator(".group").count() == 2, "로마 9/21 은 로마 묶음만(트레비·테르미니)")
+    others = await pg.inner_text(".others")
+    check("여행지 2" in others and "이동 중" in others, f"이날 다른 여행지 표시 {others!r}")
+    await pg.click("[data-goplace]:has-text('여행지 2')")
+    await pg.wait_for_timeout(400)
+    check(await pg.locator(".group").count() == 2, "다른 여행지로 이동해도 같은 날짜 유지(나폴리 9/21)")
+
+    # 폼페이 묶음을 손으로 새 여행지로 분리 → 이름을 '나폴리'로 같게 붙이면 다시 합쳐짐
+    await pg.locator("#dayTabs .day-tab").nth(2).click()  # 나폴리의 9/22(폼페이)
+    await pg.wait_for_timeout(400)
+    await pg.select_option(".gplace >> nth=0", "new")
+    await pg.wait_for_timeout(400)
+    check(await ptabs.count() == 6, "새 여행지로 분리 → 여행지 1개 증가")
+    await ptabs.nth(2).click()
+    await pg.wait_for_timeout(300)
+    await pg.fill(".ptitle", "나폴리")
+    await pg.press(".ptitle", "Enter")
+    await pg.wait_for_timeout(300)
+    await pg.locator("#placeTabs .day-tab:has-text('폼페이'), #placeTabs .day-tab:has-text('여행지 3')").first.click()
+    await pg.wait_for_timeout(300)
+    await pg.fill(".ptitle", "나폴리")
+    await pg.press(".ptitle", "Enter")
+    await pg.wait_for_timeout(400)
+    labels = [" ".join(t.split()) for t in await ptabs.all_inner_texts()]
+    check("◆ 나폴리 6장" in labels and len(labels) == 5, f"같은 이름 → 합쳐짐 {labels}")
+
+    store = json.loads(await pg.evaluate(f"localStorage.getItem('{LS_KEY}')"))
+    check(sorted(set(store["placeNames"].values())) == ["나폴리", "로마"], f"여행지 이름 저장 {store['placeNames']}")
+    check(any(v.startswith("m:") for v in store["groupPlace"].values()), "손으로 옮긴 여행지 저장")
+
+    # 새로고침 후 같은 사진을 넣으면 여행지 이름이 다시 붙는지
+    await pg.reload()
+    await pg.wait_for_timeout(600)
+    await pg.set_input_files("#fileInput", files)
+    await pg.wait_for_timeout(2500)
+    labels = [" ".join(t.split()) for t in await ptabs.all_inner_texts()]
+    check(labels[1:3] == ["◆ 로마 6장", "◆ 나폴리 6장"], f"다시 불러온 사진에 여행지 복원 {labels}")
+    await pg.set_viewport_size({"width": 400, "height": 820})
+    await pg.wait_for_timeout(400)
+    await pg.screenshot(path=str(OUT / "places-mobile.png"))
+    check(await pg.evaluate("document.documentElement.scrollWidth <= 400"), "폰 폭에서 가로 스크롤 없음")
+    check(not errors, f"페이지 오류 없음 {errors}")
+    await pg.close()
+
+
 async def main():
     if not FIX.exists():
         print("tests/fixtures 가 없습니다. 먼저 python3 tests/make_test_images.py 를 실행하세요.")
@@ -153,6 +225,7 @@ async def main():
         await test_start(browser)
         await test_jpeg_flow(browser)
         await test_heic_png(browser)
+        await test_places(browser)
         await browser.close()
     print(f"\n{'FAILED: ' + str(len(failures)) if failures else 'ALL PASSED'}")
     return 1 if failures else 0
