@@ -1082,14 +1082,25 @@ async function addFiles(fileList) {
   const files = [...fileList].filter(isImageFile);
   if (!files.length) { toast("사진 파일을 찾지 못했습니다"); return; }
   if (state.demo) exitDemo();
-  const added = [];
+  const added = [], healed = [];
   let noTime = 0, noGps = 0, dup = 0;
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     if (i % 5 === 0) progress(`사진 정보 읽는 중 ${i + 1}/${files.length}`, i / files.length);
     const m = await readMeta(f);
     const key = `${f.name}|${fmtStamp(m.time)}`;
-    if (state.byKey.has(key)) { dup++; continue; }
+    const ex = state.byKey.get(key);
+    if (ex) {
+      // 드라이브에서 받아온 원격 전용 사진(로컬 파일 없음)에 방금 고른 원본을 붙여 되살린다.
+      // 로컬 파일로 바로 보고, 다음 동기화 때 올바른 원본·썸네일을 다시 올린다.
+      if (!ex.file) {
+        ex.file = f; ex.nativeOk = undefined; ex.mime = f.type || ex.mime; ex.size = f.size;
+        ex.originalFileId = null; ex.thumbFileId = null; ex.thumbUrl = null; ex.thumbFailed = false;
+        if (fullCache.has(key)) { URL.revokeObjectURL(fullCache.get(key)); fullCache.delete(key); }
+        healed.push(ex);
+      } else { dup++; }
+      continue;
+    }
     const p = { key, name: f.name, file: f, time: m.time, timeEstimated: m.est, lat: m.lat, lng: m.lng, make: m.make, model: m.model, mime: f.type || null, size: f.size, thumbUrl: null };
     if (m.est) noTime++;
     if (!hasGps(p)) noGps++;
@@ -1099,9 +1110,10 @@ async function addFiles(fileList) {
   computeDays();
   if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
   render();
-  queueThumbs(added);
-  if (isSignedIn()) scheduleSync();
+  queueThumbs(added.concat(healed));
+  if (isSignedIn() && (added.length || healed.length)) scheduleSync();
   const bits = [`${added.length}장 추가`];
+  if (healed.length) bits.push(`원격 사진 ${healed.length}장에 원본 연결`);
   if (noGps) bits.push(`위치 없음 ${noGps}장`);
   if (noTime) bits.push(`촬영 시각 없음 ${noTime}장 (파일 수정 시각으로 대신함)`);
   if (dup) bits.push(`중복 ${dup}장 건너뜀`);
@@ -1183,13 +1195,16 @@ async function openLightbox(pkey) {
   $("#lbPrev").disabled = i <= 0; $("#lbNext").disabled = i >= list.length - 1;
   const img = $("#lbImg"); const token = ++lbToken;
   img.removeAttribute("src"); $("#lbLoading").hidden = false; $("#lbLoading").textContent = "불러오는 중…";
+  const remoteMsg = !p.file && p.originalFileId ? " (드라이브 원본을 불러오지 못함 — 이 기기에서 같은 사진을 다시 추가하면 복구됩니다)" : !p.file ? " (이 기기에 원본이 없습니다 — 같은 사진을 다시 추가하세요)" : "";
   try {
     const url = await fullUrl(p);
     if (token !== lbToken) return;
+    img.onerror = () => { if (token === lbToken) { $("#lbLoading").hidden = false; $("#lbLoading").textContent = "이 사진을 표시하지 못했습니다." + remoteMsg; } };
+    img.onload = () => { if (token === lbToken) $("#lbLoading").hidden = true; };
     img.src = url; img.alt = p.name; $("#lbLoading").hidden = true;
   } catch (e) {
     if (token !== lbToken) return;
-    $("#lbLoading").textContent = `이 사진을 표시하지 못했습니다: ${e.message || e}`;
+    $("#lbLoading").textContent = `이 사진을 표시하지 못했습니다: ${e.message || e}${remoteMsg}`;
   }
 }
 function closeLightbox() {
