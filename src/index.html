@@ -561,6 +561,24 @@ async function driveUpdateContent(fileId, blob, mime) {
   const r = await api(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&fields=id`, { method: "PATCH", headers: { "Content-Type": mime }, body: blob });
   return (await r.json()).id;
 }
+// 다시 추가한 사진이 가리키는 드라이브 원본이 실제로 있고 크기가 같은지 폴더 목록 한 번으로 확인.
+// 없거나(지워짐) 크기가 다르면(깨진 업로드) 연결을 끊어 다음 동기화 때 다시 올린다.
+async function verifyHealed(list) {
+  try {
+    const sizes = new Map((await driveListImages(await ensureFolder())).map((f) => [f.id, Number(f.size)]));
+    let bad = 0;
+    for (const p of list) {
+      if (!p.file || !p.originalFileId || sizes.get(p.originalFileId) === p.file.size) continue;
+      if (sizes.has(p.originalFileId)) p.replacedFileId = p.originalFileId;
+      p.originalFileId = null; bad++; // 썸네일은 멀쩡하므로 그대로 둔다
+    }
+    if (bad) { console.warn(`[drive] 드라이브 원본과 다른 사진 ${bad}장 → 다시 올림`); drive.dirty = true; scheduleSync(); }
+  } catch (e) { console.warn("[drive] 원본 확인 실패", e); }
+}
+function trashFile(fileId) {
+  api(`https://www.googleapis.com/drive/v3/files/${fileId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trashed: true }) })
+    .catch((e) => console.warn("[drive] 옛 파일 휴지통 이동 실패", fileId, e));
+}
 async function driveDownload(fileId) { return (await api(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`)).blob(); }
 async function driveDownloadRange(fileId, bytes) { return (await api(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers: { Range: `bytes=0-${bytes - 1}` } })).blob(); }
 async function driveListImages(parentId) {
@@ -682,6 +700,7 @@ async function pushToDrive(force) {
           const mime = p.file.type || "application/octet-stream";
           p.originalFileId = await driveUpload(p.name, p.file, mime, folderId);
           p.mime = mime; p.size = p.file.size; uploaded++;
+          if (p.replacedFileId) { trashFile(p.replacedFileId); p.replacedFileId = null; }
         }
         if (!p.thumbFileId && p.thumbUrl) {
           const tb = await (await fetch(p.thumbUrl)).blob();
@@ -691,6 +710,10 @@ async function pushToDrive(force) {
       } catch (e) {
         console.error("[drive] upload", p.name, e);
         if (isAuthError(e)) authErr = e; else failed++;
+      }
+      // 업로드 도중 창을 닫아도 진행분이 남도록 20장마다 목록(project.json)을 저장
+      if ((i + 1) % 20 === 0 && i + 1 < pending.length && !authErr) {
+        try { const rev = (drive.loadedRev || 0) + 1; await saveProject(buildProject(rev)); drive.loadedRev = rev; } catch (e) { console.warn("[drive] 중간 저장", e); }
       }
     }
     progress(null);
@@ -757,9 +780,10 @@ async function recoverCore() {
       const key = `${f.name}|${fmtStamp(m.time)}`;
       const thumbFileId = thumbByName.get(sanitize(key) + ".jpg") || null;
       const ex = state.byKey.get(key);
-      if (ex) { ex.originalFileId = f.id; ex.thumbFileId = ex.thumbFileId || thumbFileId; }
+      // 이미 원본이 연결된 사진은 덮어쓰지 않는다. 로컬에만 있고 아직 안 올린 사진은 크기가 같으면 이 원본에 연결(재업로드 방지)
+      if (ex) { if (!ex.originalFileId && (!ex.file || ex.file.size === Number(f.size))) { ex.originalFileId = f.id; ex.size = Number(f.size); } ex.thumbFileId = ex.thumbFileId || thumbFileId; }
       else {
-        const p = photoFromRecord({ key, name: f.name, time: m.time.toISOString(), lat: m.lat, lng: m.lng, timeEstimated: m.est, make: m.make, model: m.model, mime: f.mimeType, size: f.size, originalFileId: f.id, thumbFileId });
+        const p = photoFromRecord({ key, name: f.name, time: m.time.toISOString(), lat: m.lat, lng: m.lng, timeEstimated: m.est, make: m.make, model: m.model, mime: f.mimeType, size: Number(f.size), originalFileId: f.id, thumbFileId });
         state.photos.push(p); state.byKey.set(key, p); found++;
       }
     } catch (e) { console.warn("[recover]", f.name, e); }
@@ -1434,11 +1458,14 @@ async function addFiles(fileList) {
     const ex = state.byKey.get(key);
     if (trip && state.store.photoTrip[key] !== trip) { state.store.photoTrip[key] = trip; if (ex) moved++; }
     if (ex) {
-      // 드라이브에서 받아온 원격 전용 사진(로컬 파일 없음)에 방금 고른 원본을 붙여 되살린다.
-      // 로컬 파일로 바로 보고, 다음 동기화 때 올바른 원본·썸네일을 다시 올린다.
+      // 드라이브에서 받아온 원격 전용 사진(로컬 파일 없음)에 방금 고른 원본을 붙여 로컬 파일로 바로 본다.
+      // 드라이브 원본과 크기가 같으면 이미 올라간 것이므로 다시 올리지 않는다(중단 후 다시 추가해도 중복 업로드 없음).
+      // 크기가 다르면(깨진 업로드) 다음 동기화 때 다시 올리고, 옛 파일은 휴지통으로 보낸다.
       if (!ex.file) {
+        const same = ex.originalFileId && (ex.size == null || Number(ex.size) === f.size);
+        if (!same) { if (ex.originalFileId) ex.replacedFileId = ex.originalFileId; ex.originalFileId = null; ex.thumbFileId = null; }
         ex.file = f; ex.nativeOk = undefined; ex.mime = f.type || ex.mime; ex.size = f.size;
-        ex.originalFileId = null; ex.thumbFileId = null; ex.thumbUrl = null; ex.thumbFailed = false;
+        ex.thumbUrl = null; ex.thumbFailed = false;
         if (fullCache.has(key)) { URL.revokeObjectURL(fullCache.get(key)); fullCache.delete(key); }
         healed.push(ex);
       } else if (!trip) { dup++; }
@@ -1456,11 +1483,12 @@ async function addFiles(fileList) {
   render();
   queueThumbs(added.concat(healed));
   if (isSignedIn() && (added.length || healed.length) && !trip) scheduleSync();
+  if (isSignedIn() && healed.some((p) => p.originalFileId)) verifyHealed(healed.filter((p) => p.originalFileId));
   const tname = trip ? `‘${state.store.trips[trip].name || "이름 없는 그룹"}’` : "";
   const bits = [];
   if (added.length || !moved) bits.push(`${tname ? tname + "에 " : ""}${added.length}장 추가`);
   if (moved) bits.push(added.length ? `${moved}장 이 그룹으로 옮김` : `${tname}(으)로 ${moved}장 옮김`);
-  if (healed.length) bits.push(`원격 사진 ${healed.length}장에 원본 연결`);
+  if (healed.length) bits.push(`드라이브 사진 ${healed.length}장에 원본 연결`);
   if (noGps) bits.push(`위치 없음 ${noGps}장`);
   if (noTime) bits.push(`촬영 시각 없음 ${noTime}장 (파일 수정 시각으로 대신함)`);
   if (dup) bits.push(`중복 ${dup}장 건너뜀`);

@@ -8,7 +8,9 @@
 import asyncio
 import io
 import json
+import re
 import sys
+from urllib.parse import parse_qs, urlparse
 import zipfile
 from pathlib import Path
 
@@ -274,6 +276,144 @@ async def test_trips(browser):
     await pg.close()
 
 
+class FakeDrive:
+    """Drive v3 REST 를 흉내 내는 메모리 저장소 (연동 테스트용). uploads 에 업로드된 파일 이름을 순서대로 남긴다."""
+
+    def __init__(self):
+        self.files, self.n, self.uploads = {}, 0, []
+
+    def add(self, meta, data):
+        self.n += 1
+        fid = f"f{self.n}"
+        self.files[fid] = {"id": fid, "name": meta["name"], "mimeType": meta.get("mimeType", ""),
+                           "parents": meta.get("parents", []), "data": data, "trashed": False}
+        return fid
+
+    def match(self, q, f):
+        if f["trashed"]:
+            return False
+        for name in re.findall(r"name='([^']*)'", q):
+            if f["name"] != name:
+                return False
+        for mt in re.findall(r"mimeType='([^']*)'", q):
+            if f["mimeType"] != mt:
+                return False
+        if "mimeType contains 'image/'" in q and not f["mimeType"].startswith("image/"):
+            return False
+        for parent in re.findall(r"'([^']*)' in parents", q):
+            if parent not in f["parents"]:
+                return False
+        return True
+
+    def originals(self):
+        root = next(f["id"] for f in self.files.values() if f["name"] == "사진동선지도")
+        return [f for f in self.files.values() if root in f["parents"] and f["mimeType"].startswith("image/") and not f["trashed"]]
+
+    def project(self):
+        f = next((f for f in self.files.values() if f["name"] == "project.json"), None)
+        return json.loads(f["data"]) if f else None
+
+    async def handle(self, route):
+        req = route.request
+        u = urlparse(req.url)
+        qs = parse_qs(u.query)
+        path, method = u.path, req.method
+        if path == "/drive/v3/files" and method == "GET":
+            res = [f for f in self.files.values() if self.match(qs["q"][0], f)]
+            return await route.fulfill(json={"files": [{"id": f["id"], "name": f["name"], "mimeType": f["mimeType"], "size": str(len(f["data"]))} for f in res]})
+        if path == "/drive/v3/files" and method == "POST":
+            return await route.fulfill(json={"id": self.add(json.loads(req.post_data), b"")})
+        if path == "/upload/drive/v3/files" and method == "POST":
+            boundary = req.headers["content-type"].split("boundary=")[1].encode()
+            parts = req.post_data_buffer.split(b"--" + boundary)
+            body = lambda part: part.split(b"\r\n\r\n", 1)[1][:-2]
+            meta = json.loads(body(parts[1]))
+            self.uploads.append(meta["name"])
+            return await route.fulfill(json={"id": self.add(meta, body(parts[2]))})
+        m = re.match(r"/upload/drive/v3/files/(\w+)$", path)
+        if m and method == "PATCH":
+            self.files[m[1]]["data"] = req.post_data_buffer
+            return await route.fulfill(json={"id": m[1]})
+        m = re.match(r"/drive/v3/files/(\w+)$", path)
+        if m and method == "PATCH":
+            self.files[m[1]].update(json.loads(req.post_data))
+            return await route.fulfill(json={"id": m[1]})
+        if m and qs.get("alt") == ["media"]:
+            data = self.files[m[1]]["data"]
+            rng = req.headers.get("range")
+            if rng:
+                data = data[: int(rng.split("-")[1]) + 1]
+            return await route.fulfill(body=data)
+        return await route.fulfill(status=404, body="not found")
+
+
+FAKE_GIS = """
+localStorage.setItem("photo-route-map.drive-token", JSON.stringify({ access_token: "fake", expiry: Date.now() + 3600e3 }));
+window.google = { accounts: { oauth2: { initTokenClient: () => ({ requestAccessToken() {} }), revoke() {} } } };
+"""
+
+
+async def test_drive_resume(browser):
+    print("[연동: 중단 후 다시 추가해도 중복 업로드 없음]")
+    fake = FakeDrive()
+    ctx = await browser.new_context(viewport={"width": 1300, "height": 850})
+    await ctx.add_init_script(FAKE_GIS)
+    pg = await ctx.new_page()
+    errors = []
+    pg.on("pageerror", lambda e: errors.append(str(e)))
+    await pg.route("**/*", lambda r: r.abort() if any(h in r.request.url for h in ("arcgisonline.com", "fonts.g", "accounts.google.com")) else r.continue_())
+    await pg.route("https://www.googleapis.com/**", fake.handle)
+
+    async def wait_for(cond, ms=20000):
+        for _ in range(ms // 250):
+            if cond():
+                return True
+            await pg.wait_for_timeout(250)
+        return False
+
+    files = [str(FIX / f"T{i:02d}.jpg") for i in range(6)]
+    jpgs = lambda: [f for f in fake.uploads if re.fullmatch(r"T\d\d\.jpg", f)]  # 원본만 (썸네일 이름은 키_시각.jpg)
+    thumbs = lambda: [f for f in fake.uploads if not re.fullmatch(r"T\d\d\.jpg", f) and f != "project.json"]
+    await pg.goto(PAGE)
+    await pg.wait_for_timeout(1500)
+    await pg.set_input_files("#fileInput", files)
+    ok = await wait_for(lambda: len(fake.originals()) == 6 and fake.project() and sum(1 for p in fake.project()["photos"] if p["thumbFileId"]) == 6)
+    check(ok and len(jpgs()) == 6, f"처음 추가 → 원본 6장 업로드 {len(jpgs())}")
+
+    # 창을 닫았다 다시 열고 같은 사진을 다시 추가 → 원본은 다시 올리지 않음
+    await pg.reload()
+    await pg.wait_for_timeout(2500)
+    check("6장" in await pg.inner_text("#dayTabs"), "다시 열면 드라이브에서 6장 복원")
+    await pg.set_input_files("#fileInput", files)
+    await pg.wait_for_timeout(4000)
+    check(len(jpgs()) == 6, f"같은 사진 다시 추가 → 원본 재업로드 없음 (업로드 {len(jpgs())})")
+
+    # 업로드 도중 닫혀 목록(project.json)에 2장이 빠진 상황 → 자동 복구, 다시 추가해도 재업로드 없음
+    pf = next(f for f in fake.files.values() if f["name"] == "project.json")
+    proj = json.loads(pf["data"])
+    proj["photos"] = proj["photos"][:4]
+    pf["data"] = json.dumps(proj).encode()
+    await pg.reload()
+    await pg.wait_for_timeout(3000)
+    check("6장" in await pg.inner_text("#dayTabs"), "목록에서 빠진 2장 자동 복구")
+    await pg.set_input_files("#fileInput", files)
+    await pg.wait_for_timeout(4000)
+    check(len(jpgs()) == 6, f"복구 후 다시 추가 → 재업로드 없음 (업로드 {len(jpgs())})")
+
+    # 드라이브 원본이 깨진(크기가 다른) 사진만 다시 올리고 옛 파일은 휴지통으로
+    broken = next(f for f in fake.originals() if f["name"] == "T02.jpg")
+    broken["data"] = broken["data"][:100]
+    await pg.reload()
+    await pg.wait_for_timeout(2500)
+    await pg.set_input_files("#fileInput", files)
+    await wait_for(lambda: len(jpgs()) == 7)
+    check(jpgs()[6:] == ["T02.jpg"] and len(thumbs()) == 6, f"깨진 원본만 다시 업로드(썸네일 유지) {jpgs()[6:]} 썸네일 {len(thumbs())}")
+    await wait_for(lambda: broken["trashed"])
+    check(broken["trashed"] and len(fake.originals()) == 6, "깨진 옛 원본은 휴지통으로 · 드라이브 원본 6장 유지")
+    check(not errors, f"페이지 오류 없음 {errors}")
+    await ctx.close()
+
+
 async def main():
     if not FIX.exists():
         print("tests/fixtures 가 없습니다. 먼저 python3 tests/make_test_images.py 를 실행하세요.")
@@ -285,6 +425,7 @@ async def main():
         await test_jpeg_flow(browser)
         await test_heic_png(browser)
         await test_trips(browser)
+        await test_drive_resume(browser)
         await browser.close()
     print(f"\n{'FAILED: ' + str(len(failures)) if failures else 'ALL PASSED'}")
     return 1 if failures else 0
