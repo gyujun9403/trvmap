@@ -824,6 +824,8 @@ function signOut() {
   clearToken(); drive.connected = false; drive.wasConnected = false; drive.email = null;
   drive.folderId = drive.thumbFolderId = drive.projectFileId = null; drive.loadedRev = 0; drive.dirty = false;
   localStorage.removeItem(LS_CONNECTED);
+  // 이 기기에 보관한 썸네일도 지운다(공용 PC 대비)
+  thumbDb().then((db) => { if (db) db.close(); thumbDbP = null; try { indexedDB.deleteDatabase("photo-route-map-thumbs"); } catch (e) {} });
   setSync("signedout");
   toast("연동을 해제했습니다. 다른 기기에서 넣은 사진을 다시 보려면 새로고침 후 로그인하세요");
 }
@@ -992,7 +994,7 @@ function groupTitle(gkey) { const n = state.store.groupNotes[gkey]; return (n &&
 
 /* ---------- rendering ---------- */
 function render(opts = {}) {
-  renderTabs(); renderPanel(opts); renderMap(opts.fit !== false); renderSaveStatus();
+  renderTabs(); renderPanel(opts); renderMap(opts.fit !== false); renderSaveStatus(); prioritizeThumbs();
 }
 function renderTabs() {
   const pt = $("#placeTabs");
@@ -1326,37 +1328,86 @@ async function makeThumb(p) {
   c.getContext("2d").drawImage(bm, 0, 0, c.width, c.height); bm.close && bm.close();
   const tb = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.8));
   p.thumbUrl = URL.createObjectURL(tb);
+  return tb;
 }
+
+/* ---------- 썸네일 캐시 (IndexedDB) ----------
+ * 한 번 만들거나 드라이브에서 받은 썸네일을 이 브라우저에 보관해, 다시 열거나 같은 사진을 다시 넣을 때
+ * 드라이브 다운로드·원본 변환 없이 바로 표시한다. 사진 키로 저장하고, 실패하면 조용히 원래 경로로 간다.
+ * (Safari 호환을 위해 Blob 대신 ArrayBuffer로 저장)
+ */
+let thumbDbP = null;
+function thumbDb() {
+  if (!thumbDbP) thumbDbP = new Promise((res) => {
+    try {
+      const r = indexedDB.open("photo-route-map-thumbs", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("t");
+      r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onblocked = () => res(null);
+    } catch (e) { res(null); }
+  });
+  return thumbDbP;
+}
+async function thumbStore(mode, fn) {
+  const db = await thumbDb(); if (!db) return null;
+  return new Promise((res) => {
+    try { const q = fn(db.transaction("t", mode).objectStore("t")); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }
+    catch (e) { res(null); }
+  });
+}
+async function thumbCacheGet(key) {
+  const v = await thumbStore("readonly", (st) => st.get(key));
+  return v && v.buf ? new Blob([v.buf], { type: v.type || "image/jpeg" }) : null;
+}
+async function thumbCachePut(key, blob) {
+  if (!blob) return;
+  try { const buf = await blob.arrayBuffer(); await thumbStore("readwrite", (st) => st.put({ type: blob.type, buf }, key)); } catch (e) {}
+}
+function thumbCacheDel(key) { thumbStore("readwrite", (st) => st.delete(key)); }
 // 원격 사진은 드라이브에 저장된 썸네일(360px JPEG)을 그대로 받아 쓰고, 로컬 사진은 즉석 생성
-// 드라이브에 저장된 썸네일(360px JPEG)이 있으면 그걸 받아 쓰고(원본 변환보다 훨씬 빠름), 없거나 실패하면 원본으로 즉석 생성
+// 썸네일 순서: 브라우저 캐시 → 드라이브에 저장된 썸네일(360px JPEG, 원본 변환보다 훨씬 빠름) → 원본으로 즉석 생성
 async function loadThumb(p) {
+  const cached = await thumbCacheGet(p.key);
+  if (cached) { p.thumbUrl = URL.createObjectURL(cached); return; }
   if (p.thumbFileId && isSignedIn()) {
-    try { p.thumbUrl = URL.createObjectURL(await driveDownload(p.thumbFileId)); return; }
+    try { const b = await driveDownload(p.thumbFileId); p.thumbUrl = URL.createObjectURL(b); thumbCachePut(p.key, b); return; }
     catch (e) { if (!p.file) throw e; console.warn("[drive] 썸네일 받기 실패 → 원본으로 생성", p.name, e); }
   }
-  await makeThumb(p);
+  thumbCachePut(p.key, await makeThumb(p));
 }
-let thumbQueue = [], thumbRunning = 0, thumbDone = 0, thumbTotal = 0;
+// 썸네일 대기열: 드라이브에서 받는 것(네트워크)은 6장, 원본 변환(CPU, HEIC는 특히 무거움)은 2장까지 동시에.
+// 지금 보고 있는 날짜의 사진을 먼저 처리한다(prioritizeThumbs).
+const THUMB_NET = 6, THUMB_CPU = 2;
+let thumbQueue = [], thumbRunning = 0, thumbCpu = 0, thumbDone = 0, thumbTotal = 0;
+const thumbHeavy = (p) => !!p.file && !(p.thumbFileId && isSignedIn());
 function queueThumbs(list) {
   thumbQueue.push(...list); thumbTotal += list.length;
-  for (let i = 0; i < 2; i++) pumpThumbs();
+  prioritizeThumbs(); pumpThumbs();
 }
-async function pumpThumbs() {
-  if (thumbRunning >= 2) return;
-  const p = thumbQueue.shift();
-  if (!p) {
-    if (!thumbRunning) {
-      progress(null); thumbDone = thumbTotal = 0;
-      // 드라이브에서 불러오는 중이었다면 다 받은 뒤에 '동기화됨'으로
-      if (drive.loading) { drive.loading = false; setSync("synced"); }
-      if (isSignedIn()) scheduleSync();
-    }
-    return;
+function prioritizeThumbs() {
+  if (thumbQueue.length < 2 || state.current === "all") return;
+  const d = state.dayByKey.get(state.current); if (!d) return;
+  const want = new Set(viewOf(d).photos);
+  thumbQueue.sort((a, b) => want.has(b) - want.has(a)); // 안정 정렬: 보이는 날짜 사진만 앞으로
+}
+function pumpThumbs() {
+  while (thumbRunning < THUMB_NET) {
+    const i = thumbQueue.findIndex((p) => !thumbHeavy(p) || thumbCpu < THUMB_CPU);
+    if (i < 0) break;
+    runThumb(thumbQueue.splice(i, 1)[0]);
   }
-  thumbRunning++;
-  const remote = !p.file || !!(p.thumbFileId && isSignedIn()); // 드라이브에서 썸네일을 내려받는 사진
+  if (!thumbQueue.length && !thumbRunning && thumbTotal) {
+    progress(null); thumbDone = thumbTotal = 0;
+    // 드라이브에서 불러오는 중이었다면 다 받은 뒤에 '동기화됨'으로
+    if (drive.loading) { drive.loading = false; setSync("synced"); }
+    if (isSignedIn()) scheduleSync();
+  }
+}
+async function runThumb(p) {
+  const heavy = thumbHeavy(p);
+  thumbRunning++; if (heavy) thumbCpu++;
+  const remote = !heavy; // 캐시·드라이브에서 가져오는 사진
   try { await loadThumb(p); } catch (e) { p.thumbFailed = true; console.warn(p.name, e); }
-  thumbRunning--; thumbDone++;
+  thumbRunning--; if (heavy) thumbCpu--; thumbDone++;
   const label = remote ? "드라이브에서 사진 불러오는 중" : "미리보기 만드는 중";
   progress(`${label} ${thumbDone}/${thumbTotal}`, thumbDone / thumbTotal);
   if (drive.loading) setSync("syncing", `사진 불러오는 중 ${thumbDone}/${thumbTotal}`);
@@ -1478,7 +1529,7 @@ async function addFiles(fileList) {
         // 같은 원본이면 드라이브에서 받은 썸네일을 그대로 쓴다(미리보기를 다시 만들지 않음)
         if (!same) {
           if (ex.originalFileId) ex.replacedFileId = ex.originalFileId;
-          ex.originalFileId = null; ex.thumbFileId = null; ex.thumbUrl = null;
+          ex.originalFileId = null; ex.thumbFileId = null; ex.thumbUrl = null; thumbCacheDel(key);
           if (fullCache.has(key)) { URL.revokeObjectURL(fullCache.get(key)); fullCache.delete(key); }
         }
         ex.file = f; ex.nativeOk = undefined; ex.mime = f.type || ex.mime; ex.size = f.size; ex.thumbFailed = false;

@@ -280,7 +280,7 @@ class FakeDrive:
     """Drive v3 REST 를 흉내 내는 메모리 저장소 (연동 테스트용). uploads 에 업로드된 파일 이름을 순서대로 남긴다."""
 
     def __init__(self):
-        self.files, self.n, self.uploads = {}, 0, []
+        self.files, self.n, self.uploads, self.downloads = {}, 0, [], []
         self.slow_project = 0  # project.json 내려받기를 이만큼(초) 늦춰 '불러오는 중'을 길게 만든다
 
     def add(self, meta, data):
@@ -343,6 +343,7 @@ class FakeDrive:
             if self.files[m[1]]["name"] == "project.json" and self.slow_project:
                 await asyncio.sleep(self.slow_project)
             data = self.files[m[1]]["data"]
+            self.downloads.append(self.files[m[1]]["name"])
             rng = req.headers.get("range")
             if rng:
                 data = data[: int(rng.split("-")[1]) + 1]
@@ -384,8 +385,14 @@ async def test_drive_resume(browser):
     check(ok and len(jpgs()) == 6, f"처음 추가 → 원본 6장 업로드 {len(jpgs())}")
 
     # 창을 닫았다 다시 열고 같은 사진을 다시 추가 → 원본은 다시 올리지 않음
+    fake.downloads.clear()
     await pg.reload()
     await pg.wait_for_timeout(2500)
+    thumb_dl = [n for n in fake.downloads if n.endswith(".jpg")]
+    await pg.locator("#dayTabs .day-tab").nth(1).click()
+    await pg.wait_for_timeout(300)
+    check(not thumb_dl and await pg.locator(".thumb img").count() == 4, f"다시 열면 썸네일은 브라우저 캐시에서 바로 (드라이브 다운로드 {len(thumb_dl)})")
+    await pg.locator("#dayTabs .day-tab").nth(0).click()
     check("6장" in await pg.inner_text("#dayTabs"), "다시 열면 드라이브에서 6장 복원")
     await pg.locator("#dayTabs .day-tab").nth(1).click()
     await wait_for(lambda: True, 500)
