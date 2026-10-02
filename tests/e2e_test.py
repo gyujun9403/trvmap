@@ -41,12 +41,12 @@ async def new_page(browser, **kw):
     return pg, errors
 
 
-async def test_demo(browser):
-    print("[demo]")
+async def test_start(browser):
+    print("[start screen]")
     pg, errors = await new_page(browser, viewport={"width": 1300, "height": 850})
     await pg.wait_for_timeout(400)
-    check(not await pg.is_hidden("#demoBanner"), "예시 배너 표시")
-    check(await pg.locator(".gmark").count() > 0, "예시 지도 마커 표시")
+    check(await pg.locator(".empty h2").count() > 0, "시작 화면(빈 상태) 표시")
+    check(await pg.locator("label.btn[for='fileInput']").count() > 0, "사진 추가 버튼 표시")
     await pg.screenshot(path=str(OUT / "desktop.png"))
     await pg.set_viewport_size({"width": 400, "height": 820})
     await pg.wait_for_timeout(400)
@@ -150,7 +150,7 @@ async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as p:
         browser = await p.chromium.launch()
-        await test_demo(browser)
+        await test_start(browser)
         await test_jpeg_flow(browser)
         await test_heic_png(browser)
         await browser.close()

@@ -421,6 +421,13 @@ const state = {
 
 /* ---------- drive sync (구글드라이브 연동) ---------- */
 const LS_CONNECTED = "photo-route-map.drive-connected";
+const LS_TOKEN = "photo-route-map.drive-token"; // 액세스 토큰 캐시(약 1시간) — 새로고침해도 팝업 없이 재연결
+function saveToken() { try { localStorage.setItem(LS_TOKEN, JSON.stringify(drive.token)); } catch (e) {} }
+function clearToken() { drive.token = null; try { localStorage.removeItem(LS_TOKEN); } catch (e) {} }
+function readSavedToken() {
+  try { const t = JSON.parse(localStorage.getItem(LS_TOKEN) || "null"); if (t && t.access_token && t.expiry > Date.now() + 30000) return t; } catch (e) {}
+  return null;
+}
 const drive = {
   ready: false, connected: false, wasConnected: false, tokenClient: null, token: null, email: null,
   folderId: null, thumbFolderId: null, projectFileId: null, loadedRev: 0,
@@ -442,10 +449,17 @@ function initDrive() {
         error_callback: (err) => { const p = pendingToken; pendingToken = null; if (p) p.reject(new Error((err && err.type) || "로그인 취소")); },
       });
       drive.ready = true;
-      // GIS 토큰 모델은 조용한 토큰 획득이 없어 제스처(클릭) 없이는 팝업이 차단된다.
-      // 따라서 로드 시 자동 로그인하지 않고, 이전에 연결한 적이 있으면 복원하라고 안내만 한다.
-      drive.wasConnected = !!localStorage.getItem(LS_CONNECTED);
-      setSync("signedout");
+      // 저장해 둔 액세스 토큰이 아직 유효하면 팝업 없이 자동 재연결(새로고침해도 연동 유지).
+      const saved = readSavedToken();
+      if (saved) {
+        drive.token = saved; drive.connected = true;
+        setSync("syncing", "불러오는 중…");
+        pullFromDrive().catch((e) => { console.error("[drive] auto-reconnect", e); if (isAuthError(e)) { clearToken(); drive.connected = false; drive.wasConnected = true; setSync("signedout"); } else setSync("error", e.message || String(e)); });
+      } else {
+        // GIS 토큰 모델은 조용한 토큰 획득이 없어 제스처(클릭) 없이는 팝업이 차단된다. 로드 시 자동 로그인하지 않음.
+        drive.wasConnected = !!localStorage.getItem(LS_CONNECTED);
+        setSync("signedout");
+      }
     } else if (++tries > 40) { clearInterval(t); setSync("offline"); }
   }, 250);
 }
@@ -458,6 +472,7 @@ function onToken(resp) {
   if (resp && resp.error) { p.reject(new Error(resp.error)); return; }
   drive.token = { access_token: resp.access_token, expiry: Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000 };
   drive.connected = true;
+  saveToken();
   p.resolve(resp.access_token);
 }
 // GIS 토큰 모델: requestAccessToken 은 prompt 와 무관하게 '항상' 팝업을 연다 → 반드시 사용자 제스처에서만 호출.
@@ -486,7 +501,7 @@ function rawFetch(url, opts) {
 async function api(url, opts = {}) {
   await ensureToken();
   let resp = await rawFetch(url, opts);
-  if (resp.status === 401) { drive.token = null; await ensureToken(); resp = await rawFetch(url, opts); }
+  if (resp.status === 401) { clearToken(); await ensureToken(); resp = await rawFetch(url, opts); }
   if (!resp.ok) { const body = (await resp.text()).slice(0, 300); console.error("[drive] " + (opts.method || "GET") + " " + url + " → " + resp.status, body); throw new Error(`Drive ${resp.status}: ${body.slice(0, 150)}`); }
   return resp;
 }
@@ -580,7 +595,11 @@ async function pullFromDrive() {
     setSync("synced");
   } else {
     drive.loadedRev = 0;
-    await pushToDrive(true); // 원격이 비어 있으면 현재 로컬 상태를 초기 업로드
+    // 원격에 아직 프로젝트가 없을 때만 올림. 올릴 로컬 내용이 없으면 빈 프로젝트로 덮어쓰지 않는다(기존 데이터 보호).
+    const hasLocal = state.photos.some((p) => p.file) ||
+      Object.keys(state.store.photoNotes).length || Object.keys(state.store.groupNotes).length || Object.keys(state.store.dayNotes).length;
+    if (hasLocal) await pushToDrive(true);
+    else setSync("synced");
   }
 }
 let pushing = false, pushQueued = false, syncTimer = null;
@@ -600,36 +619,46 @@ async function pushToDrive(force) {
   if (!isSignedIn()) return;
   if (pushing) { pushQueued = true; return; }
   pushing = true;
+  let uploaded = 0, failed = 0, authErr = null;
   try {
     setSync("syncing", "동기화 중…");
     const folderId = await ensureFolder();
     const pending = state.photos.filter((p) => p.file && (!p.originalFileId || !p.thumbFileId));
-    let uploaded = 0;
-    for (let i = 0; i < pending.length; i++) {
+    for (let i = 0; i < pending.length && !authErr; i++) {
       const p = pending[i];
       progress(`드라이브 업로드 ${i + 1}/${pending.length}`, i / pending.length);
-      if (!p.originalFileId) {
-        const mime = p.file.type || "application/octet-stream";
-        p.originalFileId = await driveUpload(p.name, p.file, mime, folderId);
-        p.mime = mime; p.size = p.file.size; uploaded++;
-      }
-      if (!p.thumbFileId && p.thumbUrl) {
-        const tb = await (await fetch(p.thumbUrl)).blob();
-        p.thumbFileId = await driveUpload(sanitize(p.key) + ".jpg", tb, "image/jpeg", await ensureThumbFolder());
-        uploaded++;
+      try {
+        if (!p.originalFileId) {
+          const mime = p.file.type || "application/octet-stream";
+          p.originalFileId = await driveUpload(p.name, p.file, mime, folderId);
+          p.mime = mime; p.size = p.file.size; uploaded++;
+        }
+        if (!p.thumbFileId && p.thumbUrl) {
+          const tb = await (await fetch(p.thumbUrl)).blob();
+          p.thumbFileId = await driveUpload(sanitize(p.key) + ".jpg", tb, "image/jpeg", await ensureThumbFolder());
+          uploaded++;
+        }
+      } catch (e) {
+        console.error("[drive] upload", p.name, e);
+        if (isAuthError(e)) authErr = e; else failed++;
       }
     }
     progress(null);
-    try { await conflictMerge(); } catch (e) { /* 원격 재확인 실패 시 우리 rev로 진행 */ }
+    // 충돌 병합은 올린 게 있을 때만(불필요한 재조회 방지)
+    if (uploaded > 0) { try { await conflictMerge(); } catch (e) { /* 재확인 실패 시 우리 rev로 진행 */ } }
+    // 부분 성공이라도 성공분을 반드시 project.json 에 기록(재접속 복원 보장)
     if (force || uploaded > 0 || drive.dirty) {
       const rev = (drive.loadedRev || 0) + 1;
       await saveProject(buildProject(rev));
       drive.loadedRev = rev; drive.dirty = false;
     }
-    setSync("synced");
+    if (authErr) { setSync("reauth", "로그인 필요"); toast("로그인이 만료됐습니다. 헤더 ‘연동 → 지금 동기화’를 눌러 주세요", 6000); }
+    else if (failed) { setSync("error", `${failed}장 업로드 실패`); toast(`${failed}장 업로드 실패 · ‘지금 동기화’로 다시 시도하세요`, 6000); }
+    else setSync("synced");
   } catch (e) {
     progress(null);
-    if (isAuthError(e)) { setSync("reauth", "로그인 필요"); toast("자동 동기화가 만료됐습니다. 헤더 ‘연동 → 지금 동기화’를 눌러 주세요", 6000); }
+    console.error("[drive] push", e);
+    if (isAuthError(e)) { setSync("reauth", "로그인 필요"); toast("로그인이 만료됐습니다. 헤더 ‘연동 → 지금 동기화’를 눌러 주세요", 6000); }
     else { setSync("error", e.message); toast("드라이브 동기화 실패: " + (e.message || e), 5000); }
   } finally {
     pushing = false;
@@ -660,7 +689,7 @@ async function syncNow() {
 }
 function signOut() {
   if (drive.token) { try { google.accounts.oauth2.revoke(drive.token.access_token, () => {}); } catch (e) {} }
-  drive.token = null; drive.connected = false; drive.email = null;
+  clearToken(); drive.connected = false; drive.wasConnected = false; drive.email = null;
   drive.folderId = drive.thumbFolderId = drive.projectFileId = null; drive.loadedRev = 0; drive.dirty = false;
   localStorage.removeItem(LS_CONNECTED);
   setSync("signedout");
@@ -680,7 +709,7 @@ function renderSyncStatus() {
   inBtn.hidden = signedIn; nowBtn.hidden = !signedIn; outBtn.hidden = !signedIn;
   let t = "";
   if (drive.status === "offline") t = "로그인 도구를 불러오지 못했습니다. 인터넷 연결과 https 접속을 확인하세요.";
-  else if (!signedIn) t = drive.wasConnected ? "이전에 연결한 계정이 있습니다. ‘구글 계정으로 로그인’을 누르면 복원됩니다. (보안상 새로고침마다 한 번 눌러야 합니다)" : "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
+  else if (!signedIn) t = drive.wasConnected ? "로그인이 만료됐습니다(약 1시간 유지). ‘구글 계정으로 로그인’을 다시 누르면 복원됩니다." : "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
   else if (drive.status === "reauth") t = "자동 동기화가 만료됐습니다. 아래 ‘지금 동기화’를 눌러 주세요.";
   else t = (drive.email ? drive.email + " · " : "") + (drive.status === "syncing" ? (drive.statusText || "동기화 중…") : drive.status === "error" ? ("오류: " + drive.statusText) : "동기화됨");
   info.textContent = t;
@@ -800,7 +829,17 @@ function renderPanel(opts = {}) {
   const panel = $("#panel");
   const keepScroll = opts.keepScroll ? (window.innerWidth <= 820 ? window.scrollY : panel.scrollTop) : null;
   if (!state.photos.length) {
-    panel.innerHTML = `<div class="panel-inner"><div class="empty"><h2>여행 사진을 추가하세요</h2><p>사진의 촬영 시각과 GPS 위치를 읽어 날짜별 동선을 그립니다.<br>사진은 이 브라우저 안에서만 처리됩니다. (연동을 켜면 내 구글드라이브에만 저장됩니다.)</p><label class="btn primary" for="fileInput">사진 추가</label></div></div>`;
+    let inner;
+    if (drive.status === "syncing") {
+      inner = `<h2>불러오는 중…</h2><p>드라이브에서 사진과 메모를 가져오고 있습니다. 잠시만 기다려 주세요.</p>`;
+    } else if (driveConfigured() && !isSignedIn()) {
+      inner = `<h2>연동이 필요합니다</h2><p>구글 계정에 로그인하면 내 드라이브에 저장해 둔 사진·동선·메모를 이 기기에서 불러옵니다.<br>처음이라면 아래 ‘사진 추가’로 바로 시작해도 됩니다.</p>` +
+        `<button class="btn primary" id="emptySignIn">구글 계정으로 로그인</button> <label class="btn" for="fileInput">사진 추가</label>`;
+    } else {
+      inner = `<h2>여행 사진을 추가하세요</h2><p>사진의 촬영 시각과 GPS 위치를 읽어 날짜별 동선을 그립니다.<br>사진은 이 브라우저 안에서만 처리됩니다.${driveConfigured() ? " (연동을 켜면 내 구글드라이브에만 저장됩니다.)" : ""}</p><label class="btn primary" for="fileInput">사진 추가</label>`;
+    }
+    panel.innerHTML = `<div class="panel-inner"><div class="empty">${inner}</div></div>`;
+    const b = $("#emptySignIn"); if (b) b.onclick = signIn;
     return;
   }
   let h = `<div class="panel-inner">`;
@@ -906,8 +945,8 @@ function renderMap(fit) {
       markerByGroup.set(g.key, m);
     }
   }
+  map.invalidateSize(false); // 사진이 없을 때도 컨테이너 높이에 맞춰 타일을 다시 그린다(빈 회색 영역 방지)
   if (fit && bounds.length) {
-    map.invalidateSize(false);
     if (bounds.length === 1) map.setView(bounds[0], 16);
     else map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
   }
@@ -1432,9 +1471,8 @@ function boot() {
   if (typeof exifr === "undefined") missing.push("EXIF 판독기");
   if (missing.length) { document.getElementById("panel").innerHTML = `<div class="panel-inner"><div class="empty"><h2>도구를 불러오지 못했습니다</h2><p>${missing.join(", ")}</p></div></div>`; return; }
   initMap(); bind(); syncSettingsInputs();
-  initDrive();
-  loadDemo();
   render();
+  initDrive(); // 저장된 토큰이 있으면 자동 재연결해 드라이브에서 사진을 불러온다
   setTimeout(() => renderMap(true), 80);
   if (window.ResizeObserver) new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById("map"));
   if (!storageOk) toast("이 브라우저에서는 자동 저장이 안 됩니다. 메모 파일로 저장하세요", 6000);
