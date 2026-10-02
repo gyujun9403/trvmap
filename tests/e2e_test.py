@@ -272,6 +272,23 @@ async def test_trips(browser):
     await pg.wait_for_timeout(400)
     await pg.screenshot(path=str(OUT / "trips-mobile.png"))
     check(await pg.evaluate("document.documentElement.scrollWidth <= 400"), "폰 폭에서 가로 스크롤 없음")
+
+    # 폰 화면: 지도 접기 → 미리보기 영역이 넓어지고, 새로고침해도 유지, 묶음 번호를 누르면 다시 펼쳐짐
+    map_h = lambda: pg.evaluate("document.querySelector('.mapwrap').getBoundingClientRect().height")
+    before = await map_h()
+    await pg.click("#mapToggle")
+    await pg.wait_for_timeout(300)
+    after = await map_h()
+    check(after < 60 and before > 250, f"지도 접기 → 지도 영역 줄어듦 ({before:.0f} → {after:.0f}px)")
+    await pg.screenshot(path=str(OUT / "trips-mobile-collapsed.png"))
+    await pg.click(".gnum:not(.nogps) >> nth=0")
+    await pg.wait_for_timeout(500)
+    check(await map_h() > 250, "묶음 번호(지도에서 보기) → 지도 다시 펼침")
+    check(await pg.locator("#map .leaflet-marker-icon").count() > 0, "펼친 뒤 지도 마커 표시")
+    await pg.click("#mapToggle")
+    await pg.reload()
+    await pg.wait_for_timeout(800)
+    check(await map_h() < 60, "새로고침해도 접힌 상태 유지")
     check(not errors, f"페이지 오류 없음 {errors}")
     await pg.close()
 

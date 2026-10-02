@@ -136,6 +136,7 @@ button { cursor: pointer; }
 }
 .map-switch button { border: 0; padding: 6px 10px; font-size: 12px; background: #fff; color: #1b2220; }
 .map-switch button[aria-pressed="true"] { background: #1b2220; color: #fff; }
+.map-toggle { display: none; } /* 폰 화면에서만 보인다 */
 
 /* Day header */
 .dayhead { display: grid; gap: 8px; }
@@ -287,6 +288,13 @@ button { cursor: pointer; }
   .layout { display: flex; flex-direction: column; }
   .mapwrap { order: -1; height: 46vh; min-height: 280px; position: sticky; top: 0; z-index: 5; }
   .panel { overflow: visible; border-right: 0; }
+  .map-toggle {
+    display: block; position: absolute; right: 10px; top: 46px; z-index: 900; padding: 6px 10px; font-size: 12px;
+    border: 1px solid rgba(0,0,0,.2); border-radius: 6px; background: #fff; color: #1b2220; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+  }
+  body.map-collapsed .mapwrap { height: auto; min-height: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
+  body.map-collapsed #map, body.map-collapsed .map-switch { display: none; }
+  body.map-collapsed .map-toggle { position: static; width: 100%; border: 0; border-radius: 0; box-shadow: none; padding: 9px 16px; background: transparent; color: var(--accent); font-size: 13px; text-align: left; }
   .lightbox { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
   .lb-stage img { max-height: 58vh; }
   .lb-side { border-left: 0; border-top: 1px solid #2a312e; max-height: 42vh; }
@@ -350,6 +358,7 @@ button { cursor: pointer; }
       <button id="tileMap" aria-pressed="true">지도</button>
       <button id="tileSat" aria-pressed="false">위성</button>
     </div>
+    <button class="map-toggle" id="mapToggle" aria-expanded="true">지도 접기 ▲</button>
   </div>
 </main>
 
@@ -1156,6 +1165,18 @@ function initMap() {
   lg = L.layerGroup().addTo(map);
   $("#tileMap").onclick = () => setTiles("map");
   $("#tileSat").onclick = () => setTiles("sat");
+  $("#mapToggle").onclick = () => setMapCollapsed(!document.body.classList.contains("map-collapsed"));
+  let collapsed = false; try { collapsed = !!localStorage.getItem(LS_MAP_COLLAPSED); } catch (e) {}
+  if (collapsed) setMapCollapsed(true);
+}
+const LS_MAP_COLLAPSED = "photo-route-map.map-collapsed";
+let mapFitPending = false; // 지도를 접은 동안 미룬 범위 맞춤 — 펼칠 때 한다
+function setMapCollapsed(on) {
+  document.body.classList.toggle("map-collapsed", on);
+  const b = $("#mapToggle");
+  b.setAttribute("aria-expanded", !on); b.textContent = on ? "지도 펼치기 ▼" : "지도 접기 ▲";
+  try { if (on) localStorage.setItem(LS_MAP_COLLAPSED, "1"); else localStorage.removeItem(LS_MAP_COLLAPSED); } catch (e) {}
+  if (!on && map) { map.invalidateSize(false); if (mapFitPending) renderMap(true); }
 }
 function setTiles(which) {
   for (const k of ["map", "sat"]) { if (k === which) tiles[k].addTo(map); else map.removeLayer(tiles[k]); }
@@ -1215,7 +1236,9 @@ function renderMap(fit) {
     }
   }
   map.invalidateSize(false); // 사진이 없을 때도 컨테이너 높이에 맞춰 타일을 다시 그린다(빈 회색 영역 방지)
-  if (fit && bounds.length) {
+  if (fit && bounds.length && !map.getContainer().clientHeight) mapFitPending = true; // 접혀 있으면 크기가 0이라 맞출 수 없다
+  else if (fit && bounds.length) {
+    mapFitPending = false;
     const animate = mapFitted; // 첫 맞춤은 즉시, 이후(날짜/탭 전환)에는 부드럽게 확대
     const pad = placeMarkers ? [70, 70] : [40, 40]; // 여행지 이름 마커는 넓어서 가장자리에서 잘리지 않게 여백을 더 준다
     if (bounds.length === 1) animate ? map.flyTo(bounds[0], 16, { duration: 0.7 }) : map.setView(bounds[0], 16);
@@ -1285,6 +1308,18 @@ function setPlaceName(id, val) {
   t.name = val.trim(); saveSoon();
 }
 function commitPlaceName() { clearTimeout(saveTimer); saveNow(); computeDays(); render({ keepScroll: true, fit: false }); }
+
+function selectGroup(gkey, { fly = true, scroll = true } = {}) {
+  state.selectedGroup = gkey;
+  document.querySelectorAll(".group.selected").forEach((el) => el.classList.remove("selected"));
+  const card = document.querySelector(`.group[data-group="${CSS.escape(gkey)}"]`);
+  if (card) { card.classList.add("selected"); if (scroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+  const d = state.dayByKey.get(state.current); const g = d && d.groups.find((x) => x.key === gkey);
+  markerByGroup.forEach((m, k) => { const el = m.getElement(); if (el) el.classList.toggle("sel", k === gkey); });
+  const m = markerByGroup.get(gkey);
+  if (g && g.center && fly) { map.flyTo(g.center, Math.max(map.getZoom(), 16), { duration: 0.6 }); }
+  if (m) m.openTooltip();
+}
 
 /* ---------- images: thumbnails / full view / JPEG ---------- */
 const fullCache = new Map(); // key -> objectURL (HEIC 변환본), 최근 8개만
@@ -1764,7 +1799,7 @@ function bind() {
     const ph = e.target.closest("[data-photo]"); if (ph) { openLightbox(ph.dataset.photo); return; }
     const act = e.target.closest("[data-act]"); if (!act) return;
     const gkey = act.closest(".group").dataset.group;
-    if (act.dataset.act === "focus") selectGroup(gkey, { fly: true, scroll: false });
+    if (act.dataset.act === "focus") { setMapCollapsed(false); selectGroup(gkey, { fly: true, scroll: false }); }
     if (act.dataset.act === "merge") mergeWithPrevious(gkey);
   });
   panel.addEventListener("input", (e) => {
@@ -1806,6 +1841,7 @@ function bind() {
       if (state.place !== "all" && state.place !== p.place) state.place = p.place;
       if (state.current !== p.dayKey) selectDay(p.dayKey);
       selectGroup(p.groupKey, { fly: false, scroll: true });
+      setMapCollapsed(false);
       map.flyTo([p.lat, p.lng], 18, { duration: 0.6 });
     }
   };
