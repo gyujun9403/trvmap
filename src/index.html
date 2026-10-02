@@ -443,7 +443,7 @@ function initDrive() {
       });
       drive.ready = true; setSync("signedout");
       if (localStorage.getItem(LS_CONNECTED)) {
-        requestToken(false).then(async () => { await fetchEmail(); await pullFromDrive(); })
+        requestToken(false).then(() => pullFromDrive())
           .catch(() => setSync("signedout"));
       }
     } else if (++tries > 40) { clearInterval(t); setSync("offline"); }
@@ -469,9 +469,12 @@ function requestToken(interactive) {
   catch (e) { pendingToken = null; reject(e); }
   return promise;
 }
+// allowPopup: 사용자 클릭(제스처) 중에만 true. 백그라운드 자동 동기화는 false 라서
+// 토큰이 만료돼 조용히 갱신이 안 되면 팝업을 띄우지 않고(= popup_failed_to_open 회피) 깔끔히 실패시킨다.
+let allowPopup = false;
 function ensureToken() {
   if (drive.token && drive.token.expiry > Date.now()) return Promise.resolve(drive.token.access_token);
-  return requestToken(false);
+  return requestToken(allowPopup);
 }
 
 /* --- REST --- */
@@ -482,13 +485,11 @@ function rawFetch(url, opts) {
 async function api(url, opts = {}) {
   await ensureToken();
   let resp = await rawFetch(url, opts);
-  if (resp.status === 401) { drive.token = null; await requestToken(false); resp = await rawFetch(url, opts); }
+  if (resp.status === 401) { drive.token = null; await requestToken(allowPopup); resp = await rawFetch(url, opts); }
   if (!resp.ok) throw new Error(`Drive ${resp.status}: ${(await resp.text()).slice(0, 150)}`);
   return resp;
 }
-async function fetchEmail() {
-  try { const r = await api("https://www.googleapis.com/oauth2/v3/userinfo"); drive.email = (await r.json()).email || null; } catch (e) { /* email 범위 없으면 무시 */ }
-}
+function isAuthError(e) { return /popup|token|interaction_required|access_denied|로그인/i.test((e && e.message) || ""); }
 async function findOrCreateFolder(name, parent) {
   let q = `name='${name.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
   if (parent) q += ` and '${parent}' in parents`;
@@ -626,7 +627,9 @@ async function pushToDrive(force) {
     }
     setSync("synced");
   } catch (e) {
-    progress(null); setSync("error", e.message); toast("드라이브 동기화 실패: " + (e.message || e), 5000);
+    progress(null);
+    if (isAuthError(e)) { setSync("reauth", "로그인 필요"); toast("자동 동기화가 만료됐습니다. 헤더 ‘연동 → 지금 동기화’를 눌러 주세요", 6000); }
+    else { setSync("error", e.message); toast("드라이브 동기화 실패: " + (e.message || e), 5000); }
   } finally {
     pushing = false;
     if (pushQueued) { pushQueued = false; pushToDrive(); }
@@ -637,8 +640,18 @@ function sanitize(s) { return String(s).replace(/[^\w.-]+/g, "_"); }
 async function signIn() {
   if (!drive.ready) { toast("연동을 사용할 수 없습니다 (오프라인이거나 로그인 도구를 못 불러왔습니다)"); return; }
   setSync("signingin");
-  try { await requestToken(true); localStorage.setItem(LS_CONNECTED, "1"); await fetchEmail(); await pullFromDrive(); }
+  allowPopup = true;
+  try { await requestToken(true); localStorage.setItem(LS_CONNECTED, "1"); await pullFromDrive(); }
   catch (e) { setSync("signedout"); toast("연동 로그인에 실패했습니다: " + (e.message || e)); }
+  finally { allowPopup = false; }
+}
+// 사용자 클릭(제스처)으로 호출 → 필요하면 팝업 재인증까지 허용하는 수동 동기화
+async function syncNow() {
+  if (!isSignedIn()) { signIn(); return; }
+  allowPopup = true;
+  try { await ensureToken(); await pushToDrive(true); }
+  catch (e) { setSync("error", e.message); toast("동기화 실패: " + (e.message || e), 5000); }
+  finally { allowPopup = false; }
 }
 function signOut() {
   if (drive.token) { try { google.accounts.oauth2.revoke(drive.token.access_token, () => {}); } catch (e) {} }
@@ -655,14 +668,15 @@ function renderSyncStatus() {
   menu.hidden = false;
   const sum = $("#syncSummary"), info = $("#syncInfo");
   const inBtn = $("#btnSignIn"), nowBtn = $("#btnSyncNow"), outBtn = $("#btnSignOut");
-  const labels = { offline: "연동 준비 안 됨", signedout: "연동", signingin: "로그인 중…", syncing: "동기화 중…", synced: "동기화됨", error: "동기화 오류" };
+  const labels = { offline: "연동 준비 안 됨", signedout: "연동", signingin: "로그인 중…", syncing: "동기화 중…", synced: "동기화됨", reauth: "동기화 보류", error: "동기화 오류" };
   sum.textContent = labels[drive.status] || "연동";
-  sum.classList.toggle("bad", drive.status === "error");
+  sum.classList.toggle("bad", drive.status === "error" || drive.status === "reauth");
   const signedIn = isSignedIn();
   inBtn.hidden = signedIn; nowBtn.hidden = !signedIn; outBtn.hidden = !signedIn;
   let t = "";
   if (drive.status === "offline") t = "로그인 도구를 불러오지 못했습니다. 인터넷 연결과 https 접속을 확인하세요.";
   else if (!signedIn) t = "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
+  else if (drive.status === "reauth") t = "자동 동기화가 만료됐습니다. 아래 ‘지금 동기화’를 눌러 주세요.";
   else t = (drive.email ? drive.email + " · " : "") + (drive.status === "syncing" ? (drive.statusText || "동기화 중…") : drive.status === "error" ? ("오류: " + drive.statusText) : "동기화됨");
   info.textContent = t;
 }
@@ -1362,7 +1376,7 @@ function bind() {
 
   // 연동
   $("#btnSignIn").onclick = () => { $("#menuSync").open = false; signIn(); };
-  $("#btnSyncNow").onclick = () => { $("#menuSync").open = false; pushToDrive(true); };
+  $("#btnSyncNow").onclick = () => { $("#menuSync").open = false; syncNow(); };
   $("#btnSignOut").onclick = () => { $("#menuSync").open = false; signOut(); };
 
   // settings
