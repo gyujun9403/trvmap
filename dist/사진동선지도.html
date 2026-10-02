@@ -3814,7 +3814,15 @@ function ingestIndex(records) {
 }
 
 /* --- sync orchestration --- */
+// 드라이브에서 불러오는 동안에는 업로드(push)를 보류한다. 목록을 받기 전에 올리면 이미 있는 사진을
+// 모르고 다시 올리게 되므로, 불러오기가 끝난 뒤(이미 있는 사진은 연결된 상태로) 보류한 동기화를 이어서 한다.
+let pulling = false;
 async function pullFromDrive() {
+  pulling = true;
+  try { await pullCore(); }
+  finally { pulling = false; if (pushQueued) { pushQueued = false; pushToDrive(); } }
+}
+async function pullCore() {
   setSync("syncing", "불러오는 중…");
   const proj = await loadProject();
   if (proj && proj.v === 1) {
@@ -3834,7 +3842,7 @@ async function pullFromDrive() {
   if (!proj && !recovered) {
     const hasLocal = state.photos.some((p) => p.file) ||
       Object.keys(state.store.photoNotes).length || Object.keys(state.store.groupNotes).length || Object.keys(state.store.dayNotes).length;
-    if (hasLocal) { await pushToDrive(true); return; }
+    if (hasLocal) { pulling = false; await pushToDrive(true); return; }
   }
   computeDays();
   if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
@@ -3860,7 +3868,7 @@ async function conflictMerge() {
 }
 async function pushToDrive(force) {
   if (!isSignedIn()) return;
-  if (pushing) { pushQueued = true; return; }
+  if (pushing || pulling) { pushQueued = true; return; }
   pushing = true;
   let uploaded = 0, failed = 0, authErr = null;
   try {

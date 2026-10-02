@@ -281,6 +281,7 @@ class FakeDrive:
 
     def __init__(self):
         self.files, self.n, self.uploads = {}, 0, []
+        self.slow_project = 0  # project.json 내려받기를 이만큼(초) 늦춰 '불러오는 중'을 길게 만든다
 
     def add(self, meta, data):
         self.n += 1
@@ -339,6 +340,8 @@ class FakeDrive:
             self.files[m[1]].update(json.loads(req.post_data))
             return await route.fulfill(json={"id": m[1]})
         if m and qs.get("alt") == ["media"]:
+            if self.files[m[1]]["name"] == "project.json" and self.slow_project:
+                await asyncio.sleep(self.slow_project)
             data = self.files[m[1]]["data"]
             rng = req.headers.get("range")
             if rng:
@@ -410,6 +413,22 @@ async def test_drive_resume(browser):
     check(jpgs()[6:] == ["T02.jpg"] and len(thumbs()) == 6, f"깨진 원본만 다시 업로드(썸네일 유지) {jpgs()[6:]} 썸네일 {len(thumbs())}")
     await wait_for(lambda: broken["trashed"])
     check(broken["trashed"] and len(fake.originals()) == 6, "깨진 옛 원본은 휴지통으로 · 드라이브 원본 6장 유지")
+    check(not errors, f"페이지 오류 없음 {errors}")
+
+    # 드라이브에서 불러오는 중(목록 받기 전)에 사진을 추가: 있는 6장은 다시 올리지 않고 새 2장만, project.json 은 하나
+    fake.slow_project = 4
+    before = len(jpgs())
+    await pg.reload()
+    await pg.wait_for_timeout(800)
+    check("불러오는 중" in await pg.inner_text("#syncSummary") + await pg.inner_text("#panel"), "불러오는 중 상태")
+    await pg.set_input_files("#fileInput", [str(FIX / f"T{i:02d}.jpg") for i in range(8)])
+    fake.slow_project = 0
+    await wait_for(lambda: fake.project() and len(fake.project()["photos"]) == 8 and all(p["thumbFileId"] for p in fake.project()["photos"]))
+    await pg.wait_for_timeout(2500)
+    projects = [f for f in fake.files.values() if f["name"] == "project.json" and not f["trashed"]]
+    check(jpgs()[before:] == ["T06.jpg", "T07.jpg"], f"불러오는 중 추가 → 새 사진만 업로드 {jpgs()[before:]}")
+    check(len(projects) == 1 and len(fake.project()["photos"]) == 8, f"project.json 하나 · 사진 8장 ({len(projects)}개)")
+    check("8장" in await pg.inner_text("#dayTabs"), "화면에 8장")
     check(not errors, f"페이지 오류 없음 {errors}")
     await ctx.close()
 
