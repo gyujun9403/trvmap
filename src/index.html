@@ -431,7 +431,7 @@ function readSavedToken() {
 const drive = {
   ready: false, connected: false, wasConnected: false, tokenClient: null, token: null, email: null,
   folderId: null, thumbFolderId: null, projectFileId: null, loadedRev: 0,
-  status: "off", statusText: "", dirty: false,
+  status: "off", statusText: "", dirty: false, loading: false,
 };
 function driveConfigured() { return !!GOOGLE_CLIENT_ID; }
 function gisLoaded() { return typeof google !== "undefined" && google.accounts && google.accounts.oauth2; }
@@ -591,8 +591,10 @@ async function pullFromDrive() {
     computeDays();
     if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
     render();
-    queueThumbs(state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed));
-    setSync("synced");
+    const toLoad = state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed);
+    // 썸네일은 드라이브에서 내려받느라 시간이 걸린다 → 다 받을 때까지 '불러오는 중' 유지(pumpThumbs가 완료 시 '동기화됨'으로)
+    if (toLoad.length) { drive.loading = true; setSync("syncing", `사진 불러오는 중 0/${toLoad.length}`); queueThumbs(toLoad); }
+    else setSync("synced");
   } else {
     drive.loadedRev = 0;
     // 원격에 아직 프로젝트가 없을 때만 올림. 올릴 로컬 내용이 없으면 빈 프로젝트로 덮어쓰지 않는다(기존 데이터 보호).
@@ -821,7 +823,7 @@ function renderTabs() {
 function thumbHtml(p) {
   const note = state.store.photoNotes[p.key];
   return `<button class="thumb" data-photo="${esc(p.key)}" title="${esc(p.name)}">` +
-    (p.thumbUrl ? `<img src="${p.thumbUrl}" alt="" loading="lazy">` : `<span class="ph">${p.thumbFailed ? "미리보기 불가" : "변환 중"}</span>`) +
+    (p.thumbUrl ? `<img src="${p.thumbUrl}" alt="" loading="lazy">` : `<span class="ph">${p.thumbFailed ? "미리보기 불가" : (p.file ? "변환 중" : "불러오는 중")}</span>`) +
     `<span class="t">${fmtTime(p.time)}</span>` + (note ? `<span class="dot" aria-label="메모 있음"></span>` : "") +
     (hasGps(p) ? "" : `<span class="nog">위치 없음</span>`) + `</button>`;
 }
@@ -1023,11 +1025,22 @@ function queueThumbs(list) {
 async function pumpThumbs() {
   if (thumbRunning >= 2) return;
   const p = thumbQueue.shift();
-  if (!p) { if (!thumbRunning) { progress(null); thumbDone = thumbTotal = 0; if (isSignedIn()) scheduleSync(); } return; }
+  if (!p) {
+    if (!thumbRunning) {
+      progress(null); thumbDone = thumbTotal = 0;
+      // 드라이브에서 불러오는 중이었다면 다 받은 뒤에 '동기화됨'으로
+      if (drive.loading) { drive.loading = false; setSync("synced"); }
+      if (isSignedIn()) scheduleSync();
+    }
+    return;
+  }
   thumbRunning++;
+  const remote = !p.file; // 로컬 파일이 없으면 드라이브에서 내려받는 사진
   try { await loadThumb(p); } catch (e) { p.thumbFailed = true; console.warn(p.name, e); }
   thumbRunning--; thumbDone++;
-  progress(`미리보기 만드는 중 ${thumbDone}/${thumbTotal}`, thumbDone / thumbTotal);
+  const label = remote ? "드라이브에서 사진 불러오는 중" : "미리보기 만드는 중";
+  progress(`${label} ${thumbDone}/${thumbTotal}`, thumbDone / thumbTotal);
+  if (drive.loading) setSync("syncing", `사진 불러오는 중 ${thumbDone}/${thumbTotal}`);
   document.querySelectorAll(`.thumb[data-photo="${CSS.escape(p.key)}"]`).forEach((el) => { el.outerHTML = thumbHtml(p); });
   pumpThumbs();
 }
