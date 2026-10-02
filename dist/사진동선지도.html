@@ -947,6 +947,7 @@ button { cursor: pointer; }
         <div class="sync-info" id="syncInfo"></div>
         <button class="item" id="btnSignIn">구글 계정으로 로그인<small>내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 봅니다</small></button>
         <button class="item" id="btnSyncNow" hidden>지금 동기화<small>바뀐 사진·메모를 드라이브에 올립니다</small></button>
+        <button class="item" id="btnRecover" hidden>드라이브에서 복구<small>목록이 비어 보일 때 드라이브 폴더의 사진을 다시 읽어 복원합니다</small></button>
         <button class="item" id="btnSignOut" hidden>로그아웃<small>이 기기에서 연동을 해제합니다</small></button>
       </div>
     </details>
@@ -3611,7 +3612,7 @@ const drive = {
 function driveConfigured() { return !!GOOGLE_CLIENT_ID; }
 function gisLoaded() { return typeof google !== "undefined" && google.accounts && google.accounts.oauth2; }
 function isSignedIn() { return drive.connected; }
-function setSync(status, text) { drive.status = status; drive.statusText = text || ""; renderSyncStatus(); }
+function setSync(status, text) { drive.status = status; drive.statusText = text || ""; renderSyncStatus(); if (!state.photos.length) renderPanel(); }
 
 function initDrive() {
   if (!driveConfigured()) { setSync("disabled"); return; }
@@ -3707,6 +3708,18 @@ async function driveUpdateContent(fileId, blob, mime) {
   return (await r.json()).id;
 }
 async function driveDownload(fileId) { return (await api(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`)).blob(); }
+async function driveDownloadRange(fileId, bytes) { return (await api(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers: { Range: `bytes=0-${bytes - 1}` } })).blob(); }
+async function driveListImages(parentId) {
+  let out = [], pageToken = null;
+  do {
+    const q = `'${parentId}' in parents and trashed=false and mimeType contains 'image/'`;
+    let url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=nextPageToken,files(id,name,mimeType,size)&pageSize=1000&spaces=drive`;
+    if (pageToken) url += `&pageToken=${pageToken}`;
+    const j = await (await api(url)).json();
+    out.push(...(j.files || [])); pageToken = j.nextPageToken;
+  } while (pageToken);
+  return out;
+}
 async function loadProject() {
   const folderId = await ensureFolder();
   const q = `name='${DRIVE_PROJECT_NAME}' and '${folderId}' in parents and trashed=false`;
@@ -3864,6 +3877,47 @@ async function syncNow() {
   catch (e) { setSync("error", e.message); toast("동기화 실패: " + (e.message || e), 5000); }
   finally { allowPopup = false; }
 }
+// 복구: project.json 이 비었거나 어긋났을 때, 드라이브 폴더의 실제 사진들을 스캔해 목록을 다시 만든다.
+async function recoverFromDrive() {
+  if (!isSignedIn()) { signIn(); return; }
+  allowPopup = true;
+  try {
+    await ensureToken();
+    setSync("syncing", "드라이브에서 복구 중…");
+    const folderId = await ensureFolder();
+    const thumbFolderId = await ensureThumbFolder();
+    const [origs, thumbs] = [await driveListImages(folderId), await driveListImages(thumbFolderId)];
+    const thumbByName = new Map(thumbs.map((t) => [t.name, t.id]));
+    let found = 0;
+    for (let i = 0; i < origs.length; i++) {
+      const f = origs[i];
+      progress(`복구 중 ${i + 1}/${origs.length}`, i / origs.length);
+      try {
+        const part = await driveDownloadRange(f.id, 1048576); // 앞 1MB 만 받아 EXIF(촬영시각·GPS) 판독
+        const m = await readMeta(new File([part], f.name, { type: f.mimeType }));
+        const key = `${f.name}|${fmtStamp(m.time)}`;
+        const thumbFileId = thumbByName.get(sanitize(key) + ".jpg") || null;
+        const ex = state.byKey.get(key);
+        if (ex) { ex.originalFileId = f.id; ex.thumbFileId = ex.thumbFileId || thumbFileId; }
+        else {
+          const p = photoFromRecord({ key, name: f.name, time: m.time.toISOString(), lat: m.lat, lng: m.lng, timeEstimated: m.est, make: m.make, model: m.model, mime: f.mimeType, size: f.size, originalFileId: f.id, thumbFileId });
+          state.photos.push(p); state.byKey.set(key, p); found++;
+        }
+      } catch (e) { console.warn("[recover]", f.name, e); }
+    }
+    progress(null);
+    computeDays();
+    if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
+    render();
+    const rev = (drive.loadedRev || 0) + 1; await saveProject(buildProject(rev)); drive.loadedRev = rev; drive.dirty = false;
+    const toLoad = state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed);
+    if (toLoad.length) { drive.loading = true; setSync("syncing", `사진 불러오는 중 0/${toLoad.length}`); queueThumbs(toLoad); } else setSync("synced");
+    toast(`드라이브에서 ${found}장 복구했습니다`, 5000);
+  } catch (e) {
+    progress(null); console.error("[drive] recover", e);
+    setSync("error", e.message); toast("복구 실패: " + (e.message || e), 6000);
+  } finally { allowPopup = false; }
+}
 function signOut() {
   if (drive.token) { try { google.accounts.oauth2.revoke(drive.token.access_token, () => {}); } catch (e) {} }
   clearToken(); drive.connected = false; drive.wasConnected = false; drive.email = null;
@@ -3878,12 +3932,12 @@ function renderSyncStatus() {
   if (drive.status === "disabled") { menu.hidden = true; return; }
   menu.hidden = false;
   const sum = $("#syncSummary"), info = $("#syncInfo");
-  const inBtn = $("#btnSignIn"), nowBtn = $("#btnSyncNow"), outBtn = $("#btnSignOut");
+  const inBtn = $("#btnSignIn"), nowBtn = $("#btnSyncNow"), recBtn = $("#btnRecover"), outBtn = $("#btnSignOut");
   const labels = { offline: "연동 준비 안 됨", signedout: "연동", signingin: "로그인 중…", syncing: "동기화 중…", synced: "동기화됨", reauth: "동기화 보류", error: "동기화 오류" };
   sum.textContent = labels[drive.status] || "연동";
   sum.classList.toggle("bad", drive.status === "error" || drive.status === "reauth");
   const signedIn = isSignedIn();
-  inBtn.hidden = signedIn; nowBtn.hidden = !signedIn; outBtn.hidden = !signedIn;
+  inBtn.hidden = signedIn; nowBtn.hidden = !signedIn; recBtn.hidden = !signedIn; outBtn.hidden = !signedIn;
   let t = "";
   if (drive.status === "offline") t = "로그인 도구를 불러오지 못했습니다. 인터넷 연결과 https 접속을 확인하세요.";
   else if (!signedIn) t = drive.wasConnected ? "로그인이 만료됐습니다(약 1시간 유지). ‘구글 계정으로 로그인’을 다시 누르면 복원됩니다." : "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
@@ -4624,6 +4678,7 @@ function bind() {
   // 연동
   $("#btnSignIn").onclick = () => { $("#menuSync").open = false; signIn(); };
   $("#btnSyncNow").onclick = () => { $("#menuSync").open = false; syncNow(); };
+  $("#btnRecover").onclick = () => { $("#menuSync").open = false; recoverFromDrive(); };
   $("#btnSignOut").onclick = () => { $("#menuSync").open = false; signOut(); };
 
   // settings
