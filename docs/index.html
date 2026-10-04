@@ -901,6 +901,8 @@ button { cursor: pointer; }
 .lb-stage img {
   max-width: 100%; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); object-fit: contain; border-radius: 3px;
   transform-origin: center center; user-select: none; -webkit-user-select: none; -webkit-user-drag: none; will-change: transform;
+  /* HDR 사진(최근 폰 사진)을 원본 그대로 띄우면 기기가 화면 밝기를 순간 끌어올린다 → 일반(SDR) 밝기로 고정. 미지원 브라우저는 무시 */
+  dynamic-range-limit: standard;
 }
 .lb-stage img.anim { transition: transform .18s ease-out; }
 .lb-stage.zoomed { cursor: grab; }
