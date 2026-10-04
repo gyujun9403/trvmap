@@ -3882,7 +3882,7 @@ function buildProject(rev) {
     v: 1, rev, savedAt: new Date().toISOString(),
     photos: state.photos.filter((p) => !p.demoUrl).map((p) => ({
       key: p.key, name: p.name, time: p.time.toISOString(), lat: p.lat, lng: p.lng,
-      timeEstimated: !!p.timeEstimated, make: p.make || null, model: p.model || null,
+      timeEstimated: !!p.timeEstimated, timeFixed: !!p.timeFixed, tz: p.tz ?? null, make: p.make || null, model: p.model || null,
       mime: p.mime || (p.file && p.file.type) || null, size: p.size || (p.file && p.file.size) || null,
       originalFileId: p.originalFileId || null, thumbFileId: p.thumbFileId || null,
     })),
@@ -3890,7 +3890,7 @@ function buildProject(rev) {
 }
 function photoFromRecord(rec) {
   return {
-    key: rec.key, name: rec.name, file: null, time: new Date(rec.time), timeEstimated: !!rec.timeEstimated,
+    key: rec.key, name: rec.name, file: null, time: new Date(rec.time), timeEstimated: !!rec.timeEstimated, timeFixed: !!rec.timeFixed, tz: rec.tz ?? null,
     lat: rec.lat, lng: rec.lng, make: rec.make, model: rec.model, mime: rec.mime, size: rec.size,
     originalFileId: rec.originalFileId, thumbFileId: rec.thumbFileId, thumbUrl: null, remote: true,
   };
@@ -3903,6 +3903,11 @@ function ingestIndex(records) {
       // 로컬 파일 없는 사진(브라우저 보관 목록에서 복원한 것 포함)은 드라이브 쪽 id가 최신이다(다른 기기가 다시 올렸을 수 있음)
       if (!cur.file) { cur.originalFileId = rec.originalFileId || cur.originalFileId; cur.thumbFileId = rec.thumbFileId || cur.thumbFileId; }
       else { cur.originalFileId = cur.originalFileId || rec.originalFileId; cur.thumbFileId = cur.thumbFileId || rec.thumbFileId; }
+      // 다른 기기(또는 다시 추가)에서 보정한 촬영 시각을 받아온다. 이 기기에서 이미 보정했으면 그대로.
+      if ((!cur.file || (rec.timeFixed && !cur.timeFixed)) && rec.time) {
+        cur.time = new Date(rec.time); cur.timeFixed = !!rec.timeFixed;
+      }
+      if (cur.tz == null && rec.tz != null) cur.tz = rec.tz;
       continue;
     }
     const p = photoFromRecord(rec);
@@ -4057,7 +4062,7 @@ async function recoverCore() {
   if (!missing.length) return 0;
   const thumbs = await driveListImages(await ensureThumbFolder());
   const thumbByName = new Map(thumbs.map((t) => [t.name, t.id]));
-  let found = 0;
+  let found = 0; const metas = [];
   for (let i = 0; i < missing.length; i++) {
     const f = missing[i];
     progress(`드라이브에서 복구 중 ${i + 1}/${missing.length}`, i / missing.length);
@@ -4071,11 +4076,12 @@ async function recoverCore() {
       if (ex) { if (!ex.originalFileId && (!ex.file || ex.file.size === Number(f.size))) { ex.originalFileId = f.id; ex.size = Number(f.size); } ex.thumbFileId = ex.thumbFileId || thumbFileId; }
       else {
         const p = photoFromRecord({ key, name: f.name, time: m.time.toISOString(), lat: m.lat, lng: m.lng, timeEstimated: m.est, make: m.make, model: m.model, mime: f.mimeType, size: Number(f.size), originalFileId: f.id, thumbFileId });
-        state.photos.push(p); state.byKey.set(key, p); found++;
+        state.photos.push(p); state.byKey.set(key, p); found++; metas.push({ p, m });
       }
     } catch (e) { console.warn("[recover]", f.name, e); }
   }
   progress(null);
+  applyTimeFixes(metas); // 복구한 사진도 촬영 시각 보정(다른 시간대로 기록된 사진)
   return found;
 }
 // 수동 복구(메뉴/빈 화면 버튼): 자동 복구가 놓쳤을 때를 위한 보조 경로. 제스처라 필요하면 재인증 가능.
@@ -4783,6 +4789,16 @@ async function toJpegWithExif(p, src) {
     return dataURLToBlob(piexif.insert(bytes, await blobToDataURL(jpeg)));
   } catch (e) { console.warn("EXIF 기록 실패", p.name, e); return jpeg; }
 }
+// 원래 JPEG는 원본 그대로 넣되, 촬영 시각을 보정한 사진은 EXIF 날짜만 보정한 시각으로 바꿔 넣는다(나머지 EXIF는 유지).
+async function jpegWithTime(p, src) {
+  if (typeof piexif === "undefined") return src;
+  try {
+    const url = await blobToDataURL(src), ex = piexif.load(url), s = toExifDate(p.time);
+    ex["0th"] = ex["0th"] || {}; ex.Exif = ex.Exif || {};
+    ex["0th"][piexif.ImageIFD.DateTime] = s; ex.Exif[piexif.ExifIFD.DateTimeOriginal] = s; ex.Exif[piexif.ExifIFD.DateTimeDigitized] = s;
+    return dataURLToBlob(piexif.insert(piexif.dump(ex), url));
+  } catch (e) { console.warn("EXIF 시각 보정 실패 → 원본 그대로", p.name, e); return src; }
+}
 async function exportZip(day, label) {
   if (typeof JSZip === "undefined") { toast("ZIP 도구를 불러오지 못했습니다"); return; }
   const zip = new JSZip(); const used = new Set(); let converted = 0, failed = 0;
@@ -4796,7 +4812,7 @@ async function exportZip(day, label) {
     used.add(name.toLowerCase());
     try {
       const src = await sourceBlob(p);
-      if (isJpegPhoto(p) || isJpegFile(src)) zip.file(name, src);
+      if (isJpegPhoto(p) || isJpegFile(src)) zip.file(name, p.timeFixed ? await jpegWithTime(p, src) : src);
       else { zip.file(name, await toJpegWithExif(p, src)); converted++; }
     } catch (e) { failed++; console.warn(p.name, e); }
   }
@@ -4832,13 +4848,55 @@ async function readMeta(f) {
   if (!(time instanceof Date) || isNaN(time)) { time = new Date(f.lastModified); est = true; }
   let lat = out && out.latitude, lng = out && out.longitude;
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) { lat = null; lng = null; }
-  return { time, est, lat, lng, make: out && out.Make, model: out && out.Model };
+  // 시각 보정용: 카메라가 남긴 시차(+02:00 등)와 GPS 시각(세계 표준시)
+  const off = est ? null : parseOffset(out && (out.OffsetTimeOriginal || out.OffsetTime));
+  return { time, est, lat, lng, make: out && out.Make, model: out && out.Model, off, gpsUtc: gpsUtcMs(out) };
+}
+
+/* ---------- 촬영 시각 보정 ----------
+ * 카메라 시각(EXIF DateTimeOriginal)은 시간대 없는 현지 시각이다. 폰 시간대가 잘못돼 있었거나 옮기는 과정에서 바뀌어
+ * 다른 나라 시각(예: 로마에서 찍었는데 한국 시각)으로 기록된 사진이 있다. 이런 사진은 보통 시차 기록(OffsetTimeOriginal)이 없다.
+ * 규칙: 시차 기록이 있으면 카메라 시각 그대로. 없고 GPS 시각이 있으면, 가까운 시점의 '시차 기록이 있는' 사진의 시차로
+ * 현지 시각을 다시 맞춘다(카메라 시각의 초는 살리고 시차만큼 옮김). 사진 키·메모 연결은 원래 카메라 시각 기준 그대로 둔다. */
+const wallMs = (d) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+function parseOffset(s) {
+  const m = /^([+-])(\d{1,2}):?(\d{2})$/.exec(String(s ?? "").trim());
+  return m ? (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : null;
+}
+function gpsUtcMs(o) {
+  if (!o || !o.GPSDateStamp || o.GPSTimeStamp == null) return null;
+  const d = String(o.GPSDateStamp).split(/[:-]/).map(Number);
+  const t = Array.isArray(o.GPSTimeStamp) ? o.GPSTimeStamp.map(Number) : String(o.GPSTimeStamp).split(":").map(Number);
+  if (d.length < 3 || t.length < 3 || [...d, ...t].some((n) => !Number.isFinite(n))) return null;
+  return Date.UTC(d[0], d[1] - 1, d[2], t[0], t[1], Math.floor(t[2]));
+}
+// items: [{ p, m }] — 방금 읽은 사진(p)과 그 메타(m). 보정한 장수를 돌려준다.
+// 이미 보정된 사진은 보정할 근거가 이번에 없으면 그대로 둔다(다른 기기에서 고친 걸 되돌리지 않음).
+function applyTimeFixes(items) {
+  const refs = [];
+  for (const { m } of items) if (m.off != null) refs.push({ utc: wallMs(m.time) - m.off * 60000, off: m.off });
+  for (const p of state.photos) if (p.tz != null && !p.timeEstimated) refs.push({ utc: wallMs(p.time) - p.tz * 60000, off: p.tz });
+  let fixed = 0;
+  for (const { p, m } of items) {
+    if (m.est) continue;
+    if (m.off != null) { p.tz = m.off; continue; }
+    if (m.gpsUtc == null) continue;
+    let ref = null, best = 3 * 86400e3; // 3일 안의 가장 가까운 사진
+    for (const r of refs) { const d = Math.abs(r.utc - m.gpsUtc); if (d < best) { best = d; ref = r; } }
+    if (!ref) continue;
+    // 카메라 시각 − GPS 시각 = 카메라에 적용된 시차. GPS 시각이 조금 묵었을 수 있어 30분 단위로 반올림, 1시간 미만 차이는 무시
+    const shift = Math.round((ref.off - (wallMs(m.time) - m.gpsUtc) / 60000) / 30) * 30;
+    if (Math.abs(shift) < 60) continue;
+    const t = m.time;
+    p.time = new Date(t.getFullYear(), t.getMonth(), t.getDate(), t.getHours(), t.getMinutes() + shift, t.getSeconds()); p.timeFixed = true; fixed++;
+  }
+  return fixed;
 }
 async function addFiles(fileList) {
   const files = [...fileList].filter(isImageFile);
   if (!files.length) { toast("사진 파일을 찾지 못했습니다"); return; }
   if (state.demo) exitDemo();
-  const added = [], healed = [];
+  const added = [], healed = [], metas = [];
   let noTime = 0, noGps = 0, dup = 0, moved = 0;
   // 여행지 그룹 탭을 고른 채 추가하면 그 그룹에 넣는다(이미 있는 사진은 그 그룹으로 옮김)
   const trip = state.store.trips[state.place] ? state.place : null;
@@ -4850,6 +4908,7 @@ async function addFiles(fileList) {
     const ex = state.byKey.get(key);
     if (trip && state.store.photoTrip[key] !== trip) { state.store.photoTrip[key] = trip; if (ex) moved++; }
     if (ex) {
+      metas.push({ p: ex, m }); // 이미 있는 사진도 다시 넣으면 촬영 시각을 다시 확인한다(보정은 아래 applyTimeFixes)
       // 드라이브에서 받아온 원격 전용 사진(로컬 파일 없음)에 방금 고른 원본을 붙여 로컬 파일로 바로 본다.
       // 드라이브 원본과 크기가 같으면 이미 올라간 것이므로 다시 올리지 않는다(중단 후 다시 추가해도 중복 업로드 없음).
       // 크기가 다르면(깨진 업로드) 다음 동기화 때 다시 올리고, 옛 파일은 휴지통으로 보낸다.
@@ -4869,9 +4928,15 @@ async function addFiles(fileList) {
     const p = { key, name: f.name, file: f, time: m.time, timeEstimated: m.est, lat: m.lat, lng: m.lng, make: m.make, model: m.model, mime: f.type || null, size: f.size, thumbUrl: null };
     if (m.est) noTime++;
     if (!hasGps(p)) noGps++;
-    state.photos.push(p); state.byKey.set(key, p); added.push(p);
+    state.photos.push(p); state.byKey.set(key, p); added.push(p); metas.push({ p, m });
   }
   progress(null);
+  // 촬영 시각 보정: 새 사진뿐 아니라 다시 넣은 사진도. 이미 있던 사진의 시각이 바뀌면 드라이브 목록(project.json)에 반영
+  const before = new Map(metas.map(({ p }) => [p, p.time.getTime()]));
+  applyTimeFixes(metas);
+  const fixed = metas.filter(({ p }) => p.time.getTime() !== before.get(p)).length; // 이번에 실제로 바뀐 장수
+  const retimed = metas.filter(({ p }) => !added.includes(p) && p.time.getTime() !== before.get(p)).length;
+  if (retimed) { drive.dirty = true; scheduleSync(); } // scheduleSync 는 로그인 안 돼 있으면 아무것도 안 함(다음 동기화 때 반영)
   if (trip) saveSoon();
   computeDays();
   if (state.current === "all" && viewDays().length === 1) state.current = viewDays()[0].key;
@@ -4885,6 +4950,7 @@ async function addFiles(fileList) {
   if (added.length || !moved) bits.push(`${tname ? tname + "에 " : ""}${added.length}장 추가`);
   if (moved) bits.push(added.length ? `${moved}장 이 그룹으로 옮김` : `${tname}(으)로 ${moved}장 옮김`);
   if (healed.length) bits.push(`드라이브 사진 ${healed.length}장에 원본 연결`);
+  if (fixed) bits.push(`촬영 시각 보정 ${fixed}장 (다른 시간대로 기록돼 있던 사진)`);
   if (noGps) bits.push(`위치 없음 ${noGps}장`);
   if (noTime) bits.push(`촬영 시각 없음 ${noTime}장 (파일 수정 시각으로 대신함)`);
   if (dup) bits.push(`중복 ${dup}장 건너뜀`);
@@ -4956,7 +5022,8 @@ async function openLightbox(pkey) {
   const list = lbList(p); const i = list.indexOf(p);
   const g = findGroup(p.dayKey, p.groupKey);
   $("#lbCount").textContent = $("#lbCountTop").textContent = `${i + 1} / ${list.length}`;
-  $("#lbTime").textContent = `${dayLabel(p.dayKey, true)} ${fmtTime(p.time)}${p.timeEstimated ? " (추정)" : ""}`;
+  $("#lbTime").textContent = `${dayLabel(p.dayKey, true)} ${fmtTime(p.time)}${p.timeEstimated ? " (추정)" : p.timeFixed ? " (시간 보정됨)" : ""}`;
+  $("#lbTime").title = p.timeFixed ? "사진 파일에는 다른 시간대 시각으로 기록돼 있어, GPS 시각과 같은 무렵 다른 사진의 시차로 현지 시각을 맞췄습니다" : "";
   $("#lbFile").textContent = `${p.name}${hasGps(p) ? ` · ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : " · 위치 정보 없음"}`;
   $("#lbGroup").textContent = g ? `묶음 ${g.idx + 1}${groupTitle(g.key) ? ` · ${groupTitle(g.key)}` : ""} · ${g.photos.length}장` : "";
   $("#lbNote").value = state.store.photoNotes[pkey] || "";
