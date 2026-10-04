@@ -3678,6 +3678,7 @@ const state = {
 /* ---------- drive sync (구글드라이브 연동) ---------- */
 const LS_CONNECTED = "photo-route-map.drive-connected";
 const LS_TOKEN = "photo-route-map.drive-token"; // 액세스 토큰 캐시(약 1시간) — 새로고침해도 팝업 없이 재연결
+const LS_EMAIL = "photo-route-map.drive-email"; // 다시 연결할 때 계정 선택 없이 바로 넘어가도록 login_hint 로 씀
 function saveToken() { try { localStorage.setItem(LS_TOKEN, JSON.stringify(drive.token)); } catch (e) {} }
 function clearToken() { drive.token = null; try { localStorage.removeItem(LS_TOKEN); } catch (e) {} }
 function readSavedToken() {
@@ -3687,8 +3688,9 @@ function readSavedToken() {
 const drive = {
   ready: false, connected: false, wasConnected: false, tokenClient: null, token: null, email: null,
   folderId: null, thumbFolderId: null, projectFileId: null, loadedRev: 0,
-  status: "off", statusText: "", dirty: false, loading: false,
+  status: "off", statusText: "", dirty: false, loading: false, pulled: false,
 };
+try { drive.email = localStorage.getItem(LS_EMAIL); } catch (e) {}
 function driveConfigured() { return !!GOOGLE_CLIENT_ID; }
 function gisLoaded() { return typeof google !== "undefined" && google.accounts && google.accounts.oauth2; }
 function isSignedIn() { return drive.connected; }
@@ -3737,7 +3739,10 @@ function requestToken() {
   let resolve, reject;
   const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
   pendingToken = { promise, resolve, reject };
-  try { drive.tokenClient.requestAccessToken(); }
+  // 이미 이 앱을 허용한 계정이면 prompt:"" + login_hint 로 계정 선택·동의 화면 없이 팝업이 바로 닫힌다(한 번 누르면 다시 연결).
+  // 액세스 토큰은 구글 정책상 약 1시간이고, 서버 없이 쓰는 토큰 방식이라 그 이상 늘릴 방법은 없다.
+  const quiet = drive.email || localStorage.getItem(LS_CONNECTED);
+  try { drive.tokenClient.requestAccessToken(quiet ? { prompt: "", login_hint: drive.email || undefined } : {}); }
   catch (e) { pendingToken = null; reject(e); }
   return promise;
 }
@@ -3746,7 +3751,24 @@ let allowPopup = false;
 function ensureToken() {
   if (drive.token && drive.token.expiry > Date.now()) return Promise.resolve(drive.token.access_token);
   if (!allowPopup) return Promise.reject(new Error("로그인 필요"));
-  return requestToken();
+  const wasOff = !drive.connected;
+  return requestToken().then((t) => { afterReconnect(wasOff); return t; });
+}
+// 만료 뒤 클릭(원본 보기 등)으로 다시 연결됐을 때: 이번 세션에 아직 드라이브를 못 읽었으면 읽고, 밀린 동기화를 이어 한다.
+function afterReconnect(wasOff) {
+  try { localStorage.setItem(LS_CONNECTED, "1"); } catch (e) {}
+  drive.wasConnected = false;
+  fetchEmail();
+  if (!drive.pulled) { if (!pulling) pullFromDrive().catch((e) => { console.error("[drive] reconnect pull", e); setSync("error", e.message || String(e)); }); }
+  else if (wasOff || drive.status === "reauth") { setSync("synced"); if (drive.dirty) scheduleSync(); }
+}
+// 다시 연결할 때 login_hint 로 쓸 계정 이메일(drive.file 범위로 조회 가능). 실패해도 무시.
+async function fetchEmail() {
+  if (drive.email) return;
+  try {
+    const j = await (await api("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)")).json();
+    if (j.user && j.user.emailAddress) { drive.email = j.user.emailAddress; localStorage.setItem(LS_EMAIL, drive.email); renderSyncStatus(); }
+  } catch (e) { console.warn("[drive] 계정 이메일 조회 실패", e); }
 }
 
 /* --- REST --- */
@@ -3832,6 +3854,7 @@ async function saveProject(obj) {
   const blob = new Blob([JSON.stringify(obj)], { type: "application/json" });
   if (drive.projectFileId) await driveUpdateContent(drive.projectFileId, blob, "application/json");
   else drive.projectFileId = await driveUpload(DRIVE_PROJECT_NAME, blob, "application/json", folderId);
+  cacheIndex(obj.photos);
 }
 
 /* --- project payload / merge --- */
@@ -3857,7 +3880,12 @@ function ingestIndex(records) {
   let added = 0;
   for (const rec of (records || [])) {
     const cur = state.byKey.get(rec.key);
-    if (cur) { cur.originalFileId = cur.originalFileId || rec.originalFileId; cur.thumbFileId = cur.thumbFileId || rec.thumbFileId; continue; }
+    if (cur) {
+      // 로컬 파일 없는 사진(브라우저 보관 목록에서 복원한 것 포함)은 드라이브 쪽 id가 최신이다(다른 기기가 다시 올렸을 수 있음)
+      if (!cur.file) { cur.originalFileId = rec.originalFileId || cur.originalFileId; cur.thumbFileId = rec.thumbFileId || cur.thumbFileId; }
+      else { cur.originalFileId = cur.originalFileId || rec.originalFileId; cur.thumbFileId = cur.thumbFileId || rec.thumbFileId; }
+      continue;
+    }
     const p = photoFromRecord(rec);
     state.photos.push(p); state.byKey.set(p.key, p); added++;
   }
@@ -3893,13 +3921,19 @@ async function pullCore() {
   if (!proj && !recovered) {
     const hasLocal = state.photos.some((p) => p.file) ||
       Object.keys(state.store.photoNotes).length || Object.keys(state.store.groupNotes).length || Object.keys(state.store.dayNotes).length;
-    if (hasLocal) { pulling = false; await pushToDrive(true); return; }
+    if (hasLocal) { pulling = false; drive.pulled = true; await pushToDrive(true); return; }
   }
+  drive.pulled = true;
+  try { localStorage.setItem(LS_CONNECTED, "1"); } catch (e) {} // 저장된 토큰으로 자동 재연결한 경우에도 표시(보관 목록 복원 조건)
+  fetchEmail();
+  if (proj || recovered) cacheIndex(buildProject(drive.loadedRev).photos);
   computeDays();
   if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
   render();
   if (recovered) toast(`드라이브에서 ${recovered}장 복구했습니다`, 4000);
-  const toLoad = state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed);
+  // 로그인 전(보관 목록만 있을 때) 못 받은 썸네일은 이제 다시 시도
+  state.photos.forEach((p) => { if (!p.file && !p.thumbUrl && p.thumbFailed) p.thumbFailed = false; });
+  const toLoad = state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed && !thumbQueue.includes(p));
   // 썸네일은 드라이브에서 내려받느라 시간이 걸린다 → 다 받을 때까지 '불러오는 중' 유지(pumpThumbs가 완료 시 '동기화됨'으로)
   if (toLoad.length) { drive.loading = true; setSync("syncing", `사진 불러오는 중 0/${toLoad.length}`); queueThumbs(toLoad); }
   else setSync("synced");
@@ -4047,10 +4081,10 @@ async function recoverFromDrive() {
 }
 function signOut() {
   if (drive.token) { try { google.accounts.oauth2.revoke(drive.token.access_token, () => {}); } catch (e) {} }
-  clearToken(); drive.connected = false; drive.wasConnected = false; drive.email = null;
+  clearToken(); drive.connected = false; drive.wasConnected = false; drive.email = null; drive.pulled = false;
   drive.folderId = drive.thumbFolderId = drive.projectFileId = null; drive.loadedRev = 0; drive.dirty = false;
-  localStorage.removeItem(LS_CONNECTED);
-  // 이 기기에 보관한 썸네일도 지운다(공용 PC 대비)
+  localStorage.removeItem(LS_CONNECTED); localStorage.removeItem(LS_EMAIL);
+  // 이 기기에 보관한 썸네일·사진 목록도 지운다(공용 PC 대비)
   thumbDb().then((db) => { if (db) db.close(); thumbDbP = null; try { indexedDB.deleteDatabase("photo-route-map-thumbs"); } catch (e) {} });
   setSync("signedout");
   toast("연동을 해제했습니다. 다른 기기에서 넣은 사진을 다시 보려면 새로고침 후 로그인하세요");
@@ -4062,14 +4096,17 @@ function renderSyncStatus() {
   menu.hidden = false;
   const sum = $("#syncSummary"), info = $("#syncInfo");
   const inBtn = $("#btnSignIn"), nowBtn = $("#btnSyncNow"), recBtn = $("#btnRecover"), outBtn = $("#btnSignOut");
-  const labels = { offline: "연동 준비 안 됨", signedout: "연동", signingin: "로그인 중…", syncing: "동기화 중…", synced: "동기화됨", reauth: "동기화 보류", error: "동기화 오류" };
+  const labels = { offline: "연동 준비 안 됨", signedout: drive.wasConnected ? "다시 연결" : "연동", signingin: "로그인 중…", syncing: "동기화 중…", synced: "동기화됨", reauth: "동기화 보류", error: "동기화 오류" };
   sum.textContent = labels[drive.status] || "연동";
   sum.classList.toggle("bad", drive.status === "error" || drive.status === "reauth");
   const signedIn = isSignedIn();
   inBtn.hidden = signedIn; nowBtn.hidden = !signedIn; recBtn.hidden = !signedIn; outBtn.hidden = !signedIn;
+  inBtn.firstChild.textContent = drive.wasConnected ? "다시 연결" : "구글 계정으로 로그인";
   let t = "";
   if (drive.status === "offline") t = "로그인 도구를 불러오지 못했습니다. 인터넷 연결과 https 접속을 확인하세요.";
-  else if (!signedIn) t = drive.wasConnected ? "로그인이 만료됐습니다(약 1시간 유지). ‘구글 계정으로 로그인’을 다시 누르면 복원됩니다." : "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
+  else if (!signedIn) t = drive.wasConnected
+    ? `구글 로그인은 정책상 약 1시간마다 만료됩니다. 사진 목록·썸네일·메모는 이 브라우저에 보관돼 그대로 보이고, 원본 보기·업로드·동기화는 ‘다시 연결’ 한 번(계정 선택 없이)이면 됩니다.${drive.email ? " · " + drive.email : ""}`
+    : "구글 계정에 로그인하면 내 드라이브에 사진·메모를 저장해 다른 기기·모바일에서 이어 볼 수 있습니다.";
   else if (drive.status === "reauth") t = "자동 동기화가 만료됐습니다. 아래 ‘지금 동기화’를 눌러 주세요.";
   else t = (drive.email ? drive.email + " · " : "") + (drive.status === "syncing" ? (drive.statusText || "동기화 중…") : drive.status === "error" ? ("오류: " + drive.statusText) : "동기화됨");
   info.textContent = t;
@@ -4249,7 +4286,7 @@ function renderTabs() {
 function thumbHtml(p) {
   const note = state.store.photoNotes[p.key];
   return `<button class="thumb" data-photo="${esc(p.key)}" title="${esc(p.name)}">` +
-    (p.thumbUrl ? `<img src="${p.thumbUrl}" alt="" loading="lazy">` : `<span class="ph">${p.thumbFailed ? "미리보기 불가" : (p.file ? "변환 중" : "불러오는 중")}</span>`) +
+    (p.thumbUrl ? `<img src="${p.thumbUrl}" alt="" loading="lazy">` : `<span class="ph">${p.thumbFailed ? (p.file || isSignedIn() ? "미리보기 불가" : "다시 연결 필요") : (p.file ? "변환 중" : "불러오는 중")}</span>`) +
     `<span class="t">${fmtTime(p.time)}</span>` + (note ? `<span class="dot" aria-label="메모 있음"></span>` : "") +
     (hasGps(p) ? "" : `<span class="nog">위치 없음</span>`) + `</button>`;
 }
@@ -4592,19 +4629,38 @@ let thumbDbP = null;
 function thumbDb() {
   if (!thumbDbP) thumbDbP = new Promise((res) => {
     try {
-      const r = indexedDB.open("photo-route-map-thumbs", 1);
-      r.onupgradeneeded = () => r.result.createObjectStore("t");
+      // v2: 사진 목록 보관용 "meta" 저장소 추가 ("t" = 썸네일)
+      const r = indexedDB.open("photo-route-map-thumbs", 2);
+      r.onupgradeneeded = () => { const db = r.result; for (const n of ["t", "meta"]) if (!db.objectStoreNames.contains(n)) db.createObjectStore(n); };
       r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onblocked = () => res(null);
     } catch (e) { res(null); }
   });
   return thumbDbP;
 }
-async function thumbStore(mode, fn) {
+async function thumbStore(mode, fn, store = "t") {
   const db = await thumbDb(); if (!db) return null;
   return new Promise((res) => {
-    try { const q = fn(db.transaction("t", mode).objectStore("t")); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }
+    try { const q = fn(db.transaction(store, mode).objectStore(store)); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }
     catch (e) { res(null); }
   });
+}
+/* 드라이브 사진 목록(project.json 의 photos)도 이 브라우저에 보관한다. 새로고침하거나 로그인이 만료돼도
+ * 보관 목록 + 보관 썸네일 + localStorage 메모로 화면을 바로 그리고, 드라이브 확인은 로그인돼 있으면 뒤에서 한다. */
+function cacheIndex(records) {
+  if (state.demo || !driveConfigured()) return;
+  const photos = (records || []).filter((r) => r.originalFileId);
+  thumbStore("readwrite", (st) => st.put({ photos, savedAt: Date.now() }, "index"), "meta");
+}
+async function restoreIndex() {
+  if (!driveConfigured() || !localStorage.getItem(LS_CONNECTED)) return;
+  const v = await thumbStore("readonly", (st) => st.get("index"), "meta");
+  if (!v || !Array.isArray(v.photos) || !v.photos.length) return;
+  if (state.demo) exitDemo();
+  if (!ingestIndex(v.photos)) return;
+  computeDays();
+  if (state.current === "all" && state.days.length === 1) state.current = state.days[0].key;
+  render();
+  queueThumbs(state.photos.filter((p) => !p.thumbUrl && !p.thumbFailed && !thumbQueue.includes(p)));
 }
 async function thumbCacheGet(key) {
   const v = await thumbStore("readonly", (st) => st.get(key));
@@ -4620,6 +4676,7 @@ function thumbCacheDel(key) { thumbStore("readwrite", (st) => st.delete(key)); }
 async function loadThumb(p) {
   const cached = await thumbCacheGet(p.key);
   if (cached) { p.thumbUrl = URL.createObjectURL(cached); return; }
+  if (!p.file && !isSignedIn()) throw new Error("로그인 필요"); // 다시 연결하면 pullCore 가 다시 시도
   if (p.thumbFileId && isSignedIn()) {
     try { const b = await driveDownload(p.thumbFileId); p.thumbUrl = URL.createObjectURL(b); thumbCachePut(p.key, b); return; }
     catch (e) { if (!p.file) throw e; console.warn("[drive] 썸네일 받기 실패 → 원본으로 생성", p.name, e); }
@@ -4660,7 +4717,7 @@ async function runThumb(p) {
   const remote = !heavy; // 캐시·드라이브에서 가져오는 사진
   try { await loadThumb(p); } catch (e) { p.thumbFailed = true; console.warn(p.name, e); }
   thumbRunning--; if (heavy) thumbCpu--; thumbDone++;
-  const label = remote ? "드라이브에서 사진 불러오는 중" : "미리보기 만드는 중";
+  const label = remote ? "사진 불러오는 중" : "미리보기 만드는 중"; // remote 는 브라우저 보관본일 수도 있다
   progress(`${label} ${thumbDone}/${thumbTotal}`, thumbDone / thumbTotal);
   if (drive.loading) setSync("syncing", `사진 불러오는 중 ${thumbDone}/${thumbTotal}`);
   document.querySelectorAll(`.thumb[data-photo="${CSS.escape(p.key)}"]`).forEach((el) => { el.outerHTML = thumbHtml(p); });
@@ -4896,9 +4953,13 @@ async function openLightbox(pkey) {
   const img = $("#lbImg"); const token = ++lbToken;
   zoomSet(1, 0, 0);
   img.removeAttribute("src"); $("#lbLoading").hidden = false; $("#lbLoading").textContent = "불러오는 중…";
-  const remoteMsg = !p.file && p.originalFileId ? " (드라이브 원본을 불러오지 못함 — 이 기기에서 같은 사진을 다시 추가하면 복구됩니다)" : !p.file ? " (이 기기에 원본이 없습니다 — 같은 사진을 다시 추가하세요)" : "";
+  const remoteMsg = !p.file && p.originalFileId && !isSignedIn() ? " (원본은 드라이브에 있습니다 — 헤더 ‘다시 연결’ 후 다시 여세요)"
+    : !p.file && p.originalFileId ? " (드라이브 원본을 불러오지 못함 — 이 기기에서 같은 사진을 다시 추가하면 복구됩니다)" : !p.file ? " (이 기기에 원본이 없습니다 — 같은 사진을 다시 추가하세요)" : "";
   try {
-    const url = await fullUrl(p);
+    // 사진을 여는 클릭 중이므로, 로그인이 만료돼 원본을 받아야 하면 이 클릭으로 다시 연결(팝업)을 허용한다.
+    // 토큰 요청은 fullUrl 안에서 첫 await 전에 동기로 일어나므로 바로 되돌려도 된다.
+    allowPopup = true; const pending = fullUrl(p); allowPopup = false;
+    const url = await pending;
     if (token !== lbToken) return;
     img.onerror = () => { if (token === lbToken) { $("#lbLoading").hidden = false; $("#lbLoading").textContent = "이 사진을 표시하지 못했습니다." + remoteMsg; } };
     img.onload = () => { if (token === lbToken) $("#lbLoading").hidden = true; };
@@ -5265,6 +5326,7 @@ function boot() {
   if (missing.length) { document.getElementById("panel").innerHTML = `<div class="panel-inner"><div class="empty"><h2>도구를 불러오지 못했습니다</h2><p>${missing.join(", ")}</p></div></div>`; return; }
   initMap(); bind(); syncSettingsInputs();
   render();
+  restoreIndex(); // 이 브라우저에 보관한 드라이브 사진 목록·썸네일로 바로 그린다(로그인 전이어도)
   initDrive(); // 저장된 토큰이 있으면 자동 재연결해 드라이브에서 사진을 불러온다
   setTimeout(() => renderMap(true), 80);
   if (window.ResizeObserver) new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById("map"));
