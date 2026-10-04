@@ -254,6 +254,20 @@ button { cursor: pointer; }
 .lb-tools button:hover { background: rgba(50,58,54,.9); }
 .lb-tools .lb-zoomlvl { font-size: 12px; font-variant-numeric: tabular-nums; }
 .lb-tools .lb-x { font-size: 20px; }
+.lb-tools button[aria-pressed="false"] { opacity: .55; }
+.lb-tools, .lb-nav, .lb-count { transition: opacity .2s; }
+.lb-count {
+  display: none; position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); z-index: 2;
+  padding: 0 12px; height: 38px; line-height: 38px; border-radius: 19px; background: rgba(20,24,22,.72); color: #fff; font-size: 12px; font-variant-numeric: tabular-nums;
+}
+/* 사진만 보기: 정보 영역 없이 검은 화면에 사진만. 크기·회전은 JS(fitOnly)가 화면에 맞춰 정한다 */
+.lightbox.only { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); background: #000; }
+.lightbox.only .lb-side { display: none; }
+.lightbox.only .lb-stage { padding: 0; }
+.lightbox.only .lb-stage img { position: absolute; left: 50%; top: 50%; max-width: none; max-height: none; border-radius: 0; }
+.lightbox.only .lb-count { display: block; }
+.lightbox:not(.only) #lbRot { display: none; }
+.lightbox.only.ui-off .lb-tools, .lightbox.only.ui-off .lb-nav, .lightbox.only.ui-off .lb-count { opacity: 0; pointer-events: none; }
 .lb-loading { position: absolute; font-size: 13px; color: #aab5b0; }
 .lb-nav {
   position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 64px; border: 0; border-radius: 6px;
@@ -402,7 +416,10 @@ button { cursor: pointer; }
   <div class="lb-stage" id="lbStage">
     <img id="lbImg" alt="" draggable="false">
     <div class="lb-loading" id="lbLoading" hidden>불러오는 중…</div>
+    <div class="lb-count" id="lbCountTop"></div>
     <div class="lb-tools">
+      <button id="lbRot" aria-pressed="true" aria-label="사진 방향에 맞춰 자동 회전" title="사진 방향에 맞춰 자동 회전">⟳</button>
+      <button id="lbOnly" aria-pressed="false" aria-label="사진만 보기" title="사진만 보기 (F)">⛶</button>
       <button id="lbZoomOut" aria-label="축소">−</button>
       <button id="lbZoomReset" class="lb-zoomlvl" aria-label="원래 크기로">100%</button>
       <button id="lbZoomIn" aria-label="확대">+</button>
@@ -425,7 +442,7 @@ button { cursor: pointer; }
       <button id="lbShowMap">지도에서 보기</button>
       <a id="lbGmaps" target="_blank" rel="noopener">구글맵</a>
     </div>
-    <div class="lb-hint">← → 로 넘기기 · Esc 닫기 · 휠/두 손가락/두 번 눌러 확대, 확대 중엔 끌어서 이동 · + − 0 키 (메모 입력 중에는 키가 동작하지 않음)</div>
+    <div class="lb-hint">← → 로 넘기기 · Esc 닫기 · ⛶(F) 사진만 보기 · 휠/두 손가락/두 번 눌러 확대, 확대 중엔 끌어서 이동 · + − 0 키 (메모 입력 중에는 키가 동작하지 않음)</div>
   </aside>
 </div>
 <div class="drop" id="dropHint" hidden>여기에 사진이나 폴더를 놓으세요</div>
@@ -1194,6 +1211,7 @@ function renderPanel(opts = {}) {
     const othersHtml = others.length ? `<div class="others">${state.place === "all" ? "이날 그룹" : "이날 다른 그룹"} ${others.map((pl) => `<button class="small-btn" data-goplace="${esc(pl.id)}">${esc(pl.label)} ${full.groups.filter((g) => g.place === pl.id).reduce((a, g) => a + g.photos.length, 0)}장</button>`).join("")}</div>` : "";
     h += `<div class="dayhead" style="--c:${d.color}">${curPlace ? `<div class="label">${esc(curPlace.label)}</div>` : ""}<h2>${esc(dayLabel(d.key))}</h2>
       <div class="stats"><span class="mono"><b>${fmtTime(d.photos[0].time)}–${fmtTime(d.photos[d.photos.length - 1].time)}</b></span><span>사진 <b>${d.photos.length}</b>장</span><span>묶음 <b>${d.groups.length}</b>개</span><span>사진 사이 직선거리 <b>${fmtDist(d.dist)}</b></span>${d.gpsCount < d.photos.length ? `<span>위치 없음 <b>${d.photos.length - d.gpsCount}</b>장</span>` : ""}</div>
+      <div class="others"><button class="small-btn" data-slideshow="${d.key}">⛶ 이날 사진만 보기</button></div>
       ${othersHtml}
       ${hasTrips() ? `<div class="others">이날${curPlace ? " 이 그룹" : ""} 사진 ${d.photos.length}장을 <select class="gplace" data-daymove="${d.key}" aria-label="이날 사진 옮길 그룹"><option value="">그룹 선택…</option>${tripOptions(state.place)}</select> (으)로 옮기기</div>` : ""}
       <label class="label" for="dayNote">이날 메모</label>
@@ -1760,7 +1778,7 @@ async function openLightbox(pkey) {
   const lb = $("#lightbox"); lb.hidden = false; document.body.style.overflow = "hidden";
   const list = lbList(p); const i = list.indexOf(p);
   const g = findGroup(p.dayKey, p.groupKey);
-  $("#lbCount").textContent = `${i + 1} / ${list.length}`;
+  $("#lbCount").textContent = $("#lbCountTop").textContent = `${i + 1} / ${list.length}`;
   $("#lbTime").textContent = `${dayLabel(p.dayKey, true)} ${fmtTime(p.time)}${p.timeEstimated ? " (추정)" : ""}`;
   $("#lbFile").textContent = `${p.name}${hasGps(p) ? ` · ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : " · 위치 정보 없음"}`;
   $("#lbGroup").textContent = g ? `묶음 ${g.idx + 1}${groupTitle(g.key) ? ` · ${groupTitle(g.key)}` : ""} · ${g.photos.length}장` : "";
@@ -1776,7 +1794,8 @@ async function openLightbox(pkey) {
   const gm = $("#lbGmaps"); gm.hidden = !hasGps(p); if (hasGps(p)) gm.href = gmapsUrl(p.lat, p.lng);
   $("#lbPrev").disabled = i <= 0; $("#lbNext").disabled = i >= list.length - 1;
   const img = $("#lbImg"); const token = ++lbToken;
-  zoomSet(1, 0, 0);
+  lbView.rot = 0; zoomSet(1, 0, 0);
+  img.style.visibility = "hidden"; // 새 사진 크기·회전을 정할 때까지(onload) 이전 크기로 비치지 않게
   img.removeAttribute("src"); $("#lbLoading").hidden = false; $("#lbLoading").textContent = "불러오는 중…";
   const remoteMsg = !p.file && p.originalFileId && !isSignedIn() ? " (원본은 드라이브에 있습니다 — 헤더 ‘다시 연결’ 후 다시 여세요)"
     : !p.file && p.originalFileId ? " (드라이브 원본을 불러오지 못함 — 이 기기에서 같은 사진을 다시 추가하면 복구됩니다)" : !p.file ? " (이 기기에 원본이 없습니다 — 같은 사진을 다시 추가하세요)" : "";
@@ -1787,7 +1806,7 @@ async function openLightbox(pkey) {
     const url = await pending;
     if (token !== lbToken) return;
     img.onerror = () => { if (token === lbToken) { $("#lbLoading").hidden = false; $("#lbLoading").textContent = "이 사진을 표시하지 못했습니다." + remoteMsg; } };
-    img.onload = () => { if (token === lbToken) $("#lbLoading").hidden = true; };
+    img.onload = () => { if (token === lbToken) { $("#lbLoading").hidden = true; fitOnly(); zoomSet(1, 0, 0); img.style.visibility = ""; } };
     img.src = url; img.alt = p.name; $("#lbLoading").hidden = true;
   } catch (e) {
     if (token !== lbToken) return;
@@ -1795,6 +1814,7 @@ async function openLightbox(pkey) {
   }
 }
 function closeLightbox() {
+  setOnly(false);
   $("#lightbox").hidden = true; document.body.style.overflow = ""; const k = state.lb; state.lb = null; lbToken++;
   renderPanel({ keepScroll: true });
   if (k) { const el = document.querySelector(`.thumb[data-photo="${CSS.escape(k)}"]`); if (el) el.focus({ preventScroll: true }); }
@@ -1808,9 +1828,61 @@ function lbStep(dir) {
 /* 크게 보기 확대: 사진(img)에만 translate+scale을 건다. 원점은 사진 가운데(무대 가운데와 같음). */
 const ZOOM_MAX = 6;
 const zoom = { s: 1, x: 0, y: 0 };
-function zoomClamp() {
+/* 사진만 보기: only = 모드 켜짐, rot = 지금 사진을 돌린 각도(0/90), autoRot = 사진 방향에 맞춰 자동 회전(폰 등 터치 기기만) */
+const LS_AUTOROT = "photo-route-map.autorotate";
+const isTouchDevice = () => window.matchMedia && matchMedia("(pointer: coarse)").matches;
+const lbView = { only: false, rot: 0, autoRot: (() => { try { return localStorage.getItem(LS_AUTOROT) !== "0"; } catch (e) { return true; } })() };
+// 화면에 보이는(회전 반영) 사진 크기, 배율 1 기준
+function visualSize() {
+  const img = $("#lbImg");
+  return lbView.rot ? [img.offsetHeight, img.offsetWidth] : [img.offsetWidth, img.offsetHeight];
+}
+/* 사진만 보기에서 사진 크기와 회전을 정한다.
+ * 사진과 화면의 가로·세로 방향이 다르면 90° 돌려서, 폰을 사진 방향으로 돌려 들면 화면을 꽉 채우게 한다.
+ * (폰 화면 회전이 켜져 있으면 폰을 돌리는 순간 화면도 돌아 방향이 맞으므로 회전 없이 꽉 찬다.)
+ * 크기는 잘리지 않는 최대(contain) — 파노라마도 긴 쪽을 화면의 긴 쪽에 맞춰 전체가 보인다. */
+function fitOnly() {
   const img = $("#lbImg"), st = $("#lbStage");
-  const w = img.offsetWidth * zoom.s, h = img.offsetHeight * zoom.s;
+  if (!lbView.only || !img.naturalWidth) { img.style.width = img.style.height = ""; lbView.rot = 0; return; }
+  const nw = img.naturalWidth, nh = img.naturalHeight, W = st.clientWidth, H = st.clientHeight;
+  const ar = nw / nh, sar = W / H;
+  // 거의 정사각형인 사진·화면은 돌리지 않는다
+  lbView.rot = lbView.autoRot && isTouchDevice() && ((ar > 1.1 && sar < 0.9) || (ar < 0.9 && sar > 1.1)) ? 90 : 0;
+  const ew = lbView.rot ? nh : nw, eh = lbView.rot ? nw : nh;
+  const k = Math.min(W / ew, H / eh);
+  img.style.width = `${nw * k}px`; img.style.height = `${nh * k}px`;
+}
+function setOnly(on) {
+  if (lbView.only === on) return;
+  lbView.only = on;
+  const lb = $("#lightbox");
+  lb.classList.toggle("only", on); lb.classList.remove("ui-off");
+  $("#lbOnly").setAttribute("aria-pressed", String(on));
+  $("#lbOnly").title = on ? "사진만 보기 끄기 (F)" : "사진만 보기 (F)";
+  // 폰 브라우저 주소창까지 숨기기(안드로이드 등 지원 브라우저만, 아이폰 Safari는 지원 안 함 → 그냥 무시)
+  try {
+    if (on && !document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+    else if (!on && document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  } catch (e) {}
+  fitOnly(); zoomSet(1, 0, 0);
+}
+function setAutoRot(on) {
+  lbView.autoRot = on;
+  try { localStorage.setItem(LS_AUTOROT, on ? "1" : "0"); } catch (e) {}
+  $("#lbRot").setAttribute("aria-pressed", String(on));
+  fitOnly(); zoomSet(1, 0, 0, true);
+}
+// 두 번 누르기 배율: 사진만 보기에선 화면을 꽉 채우는 배율(남는 여백이 없어지는 만큼), 이미 거의 꽉 차 있거나 일반 크게 보기면 2.5배.
+function fillScale() {
+  if (!lbView.only) return 2.5;
+  const st = $("#lbStage"), [w, h] = visualSize();
+  if (!w || !h) return 2.5;
+  const f = Math.max(st.clientWidth / w, st.clientHeight / h);
+  return f > 1.15 && f <= ZOOM_MAX ? f : 2.5;
+}
+function zoomClamp() {
+  const st = $("#lbStage"), [vw, vh] = visualSize();
+  const w = vw * zoom.s, h = vh * zoom.s;
   const mx = Math.max(0, (w - st.clientWidth) / 2), my = Math.max(0, (h - st.clientHeight) / 2);
   zoom.x = Math.min(mx, Math.max(-mx, zoom.x)); zoom.y = Math.min(my, Math.max(-my, zoom.y));
 }
@@ -1819,7 +1891,13 @@ function zoomSet(s, x, y, anim) {
   if (zoom.s === 1) zoom.x = zoom.y = 0; else zoomClamp();
   const img = $("#lbImg");
   img.classList.toggle("anim", !!anim);
-  img.style.transform = zoom.s === 1 ? "" : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})`;
+  // 사진만 보기에선 사진을 무대 가운데에 절대 배치(left/top 50%)하므로 -50% 로 가운데를 맞춘 뒤 이동·회전·확대
+  const t = [];
+  if (lbView.only) t.push("translate(-50%, -50%)");
+  if (zoom.x || zoom.y) t.push(`translate(${zoom.x}px, ${zoom.y}px)`);
+  if (lbView.rot) t.push(`rotate(${lbView.rot}deg)`);
+  if (zoom.s !== 1) t.push(`scale(${zoom.s})`);
+  img.style.transform = t.join(" ");
   $("#lbStage").classList.toggle("zoomed", zoom.s > 1);
   $("#lbZoomReset").textContent = `${Math.round(zoom.s * 100)}%`;
   $("#lbZoomOut").disabled = zoom.s <= 1; $("#lbZoomIn").disabled = zoom.s >= ZOOM_MAX;
@@ -1837,6 +1915,7 @@ function initLightboxZoom() {
   let g = null;           // 진행 중인 제스처
   let lastTap = null;     // 두 번 누르기 감지
   let suppressUntil = 0;   // 끌기·두 번 누르기 직후의 click 무시
+  let tapTimer = null;     // 사진만 보기에서 한 번 누르기(버튼 숨기기) 대기
   const stageCenter = () => { const r = st.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
   const pinchInfo = () => {
     const [a, b] = [...pts.values()];
@@ -1883,16 +1962,23 @@ function initLightboxZoom() {
     }
     if (pts.size > 0) return;
     st.classList.remove("panning");
-    const dx = e.clientX - g.sx, dy = e.clientY - g.sy;
+    const sdx = e.clientX - g.sx, sdy = e.clientY - g.sy;
+    // 사진을 90° 돌려 보여줄 때는 사진 기준 좌우(폰을 돌려 든 사람의 좌우)로 넘긴다: 화면 아래→위로 밀면 다음
+    const dx = lbView.rot ? sdy : sdx, dy = lbView.rot ? -sdx : sdy;
     if (g.moved) suppressUntil = Date.now() + 400;
     if (e.type === "pointerup" && e.pointerType !== "mouse" && !g.multi && !g.startZoomed && zoom.s === 1 && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.2) {
       lbStep(dx < 0 ? 1 : -1);
-    } else if (e.type === "pointerup" && !g.multi && !g.moved && e.target.closest("#lbImg")) {
+    } else if (e.type === "pointerup" && !g.multi && !g.moved && (lbView.only || e.target.closest("#lbImg"))) {
       const now = Date.now();
+      clearTimeout(tapTimer);
       if (lastTap && now - lastTap.t < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
-        if (zoom.s > 1) zoomSet(1, 0, 0, true); else zoomAt(2.5, e.clientX, e.clientY, true);
+        if (zoom.s > 1) zoomSet(1, 0, 0, true); else zoomAt(fillScale(), e.clientX, e.clientY, true);
         lastTap = null; suppressUntil = Date.now() + 400;
-      } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+      } else {
+        lastTap = { t: now, x: e.clientX, y: e.clientY };
+        // 사진만 보기: 한 번 누르면 버튼을 숨기거나 다시 보인다(두 번 누르기와 구분하려고 잠깐 기다림)
+        if (lbView.only) tapTimer = setTimeout(() => $("#lightbox").classList.toggle("ui-off"), 330);
+      }
     }
     if (zoom.s < 1.05) zoomSet(1, 0, 0, true);
     g = null;
@@ -1909,7 +1995,12 @@ function initLightboxZoom() {
   $("#lbZoomIn").onclick = () => zoomAt(zoom.s * 1.5, null, null, true);
   $("#lbZoomOut").onclick = () => zoomAt(zoom.s / 1.5, null, null, true);
   $("#lbZoomReset").onclick = () => zoomSet(1, 0, 0, true);
-  window.addEventListener("resize", () => { if (state.lb) zoomSet(zoom.s, zoom.x, zoom.y); });
+  $("#lbOnly").onclick = () => setOnly(!lbView.only);
+  $("#lbRot").onclick = () => setAutoRot(!lbView.autoRot);
+  $("#lbRot").setAttribute("aria-pressed", String(lbView.autoRot));
+  if (!isTouchDevice()) $("#lbRot").hidden = true; // 자동 회전은 폰·태블릿에서만 의미가 있다
+  // 폰을 돌리거나 전체 화면이 바뀌면 사진 크기·회전을 다시 맞춘다
+  window.addEventListener("resize", () => { if (!state.lb) return; const before = lbView.rot; fitOnly(); if (lbView.rot !== before) zoomSet(1, 0, 0); else zoomSet(zoom.s, zoom.x, zoom.y); });
 }
 
 /* ---------- demo ---------- */
@@ -2007,6 +2098,8 @@ function bind() {
     const gp = e.target.closest("[data-goplace]"); if (gp) { selectPlace(gp.dataset.goplace, true); return; }
     const dt = e.target.closest("[data-deltrip]"); if (dt) { deleteTrip(dt.dataset.deltrip); return; }
     const dc = e.target.closest(".daycard"); if (dc) { selectDay(dc.dataset.day); return; }
+    const so = e.target.closest("[data-slideshow]");
+    if (so) { const d = state.dayByKey.get(so.dataset.slideshow); const first = d && viewOf(d).photos[0]; if (first) { setOnly(true); openLightbox(first.key); } return; }
     const ph = e.target.closest("[data-photo]"); if (ph) { openLightbox(ph.dataset.photo); return; }
     const act = e.target.closest("[data-act]"); if (!act) return;
     const gkey = act.closest(".group").dataset.group;
@@ -2057,18 +2150,19 @@ function bind() {
     }
   };
   $("#lbCloseTop").onclick = closeLightbox;
-  $("#lbStage").addEventListener("click", (e) => { if (e.target.id === "lbStage") closeLightbox(); });
+  $("#lbStage").addEventListener("click", (e) => { if (e.target.id === "lbStage" && !lbView.only) closeLightbox(); }); // 사진만 보기에선 배경 누르기 = 버튼 숨기기
   initLightboxZoom(); // 확대·이동·넘기기(스와이프) 제스처
   document.addEventListener("keydown", (e) => {
     if (!state.lb) return;
     const typing = /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
-    if (e.key === "Escape") { if (typing) document.activeElement.blur(); else if (zoom.s > 1) zoomSet(1, 0, 0, true); else closeLightbox(); }
+    if (e.key === "Escape") { if (typing) document.activeElement.blur(); else if (zoom.s > 1) zoomSet(1, 0, 0, true); else if (lbView.only) setOnly(false); else closeLightbox(); }
     if (typing) return;
     if (e.key === "ArrowLeft") lbStep(-1);
     if (e.key === "ArrowRight") lbStep(1);
     if (e.key === "+" || e.key === "=") zoomAt(zoom.s * 1.5, null, null, true);
     if (e.key === "-") zoomAt(zoom.s / 1.5, null, null, true);
     if (e.key === "0") zoomSet(1, 0, 0, true);
+    if (e.key === "f" || e.key === "F") setOnly(!lbView.only);
   });
 
   // 메모 파일
