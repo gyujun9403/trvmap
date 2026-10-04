@@ -233,9 +233,27 @@ button { cursor: pointer; }
 .lightbox {
   position: fixed; inset: 0; z-index: 2000; background: rgba(8,10,9,.94); color: #eef1ef;
   display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+  height: 100vh; height: 100dvh; /* 폰 브라우저 주소창에 아래쪽이 가려지지 않게 */
 }
-.lb-stage { position: relative; min-width: 0; min-height: 0; display: grid; place-items: center; padding: 16px; }
-.lb-stage img { max-width: 100%; max-height: calc(100vh - 32px); object-fit: contain; border-radius: 3px; }
+/* touch-action: none → 브라우저 자체 핀치 확대 대신 앱이 사진만 확대한다(페이지 전체가 커져 닫기가 안 보이던 문제) */
+.lb-stage { position: relative; min-width: 0; min-height: 0; display: grid; place-items: center; padding: 16px; overflow: hidden; touch-action: none; }
+.lb-stage img {
+  max-width: 100%; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); object-fit: contain; border-radius: 3px;
+  transform-origin: center center; user-select: none; -webkit-user-select: none; -webkit-user-drag: none; will-change: transform;
+}
+.lb-stage img.anim { transition: transform .18s ease-out; }
+.lb-stage.zoomed { cursor: grab; }
+.lb-stage.zoomed.panning { cursor: grabbing; }
+.lb-tools {
+  position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); right: 10px; z-index: 2; display: flex; gap: 6px; align-items: center;
+}
+.lb-tools button {
+  min-width: 38px; height: 38px; padding: 0 10px; border: 0; border-radius: 19px; background: rgba(20,24,22,.72); color: #fff; font-size: 17px; line-height: 1;
+  box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+.lb-tools button:hover { background: rgba(50,58,54,.9); }
+.lb-tools .lb-zoomlvl { font-size: 12px; font-variant-numeric: tabular-nums; }
+.lb-tools .lb-x { font-size: 20px; }
 .lb-loading { position: absolute; font-size: 13px; color: #aab5b0; }
 .lb-nav {
   position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 64px; border: 0; border-radius: 6px;
@@ -296,8 +314,9 @@ button { cursor: pointer; }
   body.map-collapsed #map, body.map-collapsed .map-switch { display: none; }
   body.map-collapsed .map-toggle { position: static; width: 100%; border: 0; border-radius: 0; box-shadow: none; padding: 9px 16px; background: transparent; color: var(--accent); font-size: 13px; text-align: left; }
   .lightbox { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
-  .lb-stage img { max-height: 58vh; }
-  .lb-side { border-left: 0; border-top: 1px solid #2a312e; max-height: 42vh; }
+  .lb-stage img { max-height: 58vh; max-height: 58dvh; }
+  .lb-side { border-left: 0; border-top: 1px solid #2a312e; max-height: 42vh; max-height: 42dvh; padding-top: 12px; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .lb-side .lb-close { display: none; } /* 폰에서는 사진 위 오른쪽 위 ✕ 로 닫는다 */
   .lb-side textarea { min-height: 90px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -364,8 +383,14 @@ button { cursor: pointer; }
 
 <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="사진 크게 보기">
   <div class="lb-stage" id="lbStage">
-    <img id="lbImg" alt="">
+    <img id="lbImg" alt="" draggable="false">
     <div class="lb-loading" id="lbLoading" hidden>불러오는 중…</div>
+    <div class="lb-tools">
+      <button id="lbZoomOut" aria-label="축소">−</button>
+      <button id="lbZoomReset" class="lb-zoomlvl" aria-label="원래 크기로">100%</button>
+      <button id="lbZoomIn" aria-label="확대">+</button>
+      <button id="lbCloseTop" class="lb-x" aria-label="닫기">✕</button>
+    </div>
     <button class="lb-nav prev" id="lbPrev" aria-label="이전 사진">‹</button>
     <button class="lb-nav next" id="lbNext" aria-label="다음 사진">›</button>
   </div>
@@ -383,7 +408,7 @@ button { cursor: pointer; }
       <button id="lbShowMap">지도에서 보기</button>
       <a id="lbGmaps" target="_blank" rel="noopener">구글맵</a>
     </div>
-    <div class="lb-hint">← → 로 넘기기 · Esc 닫기 (메모 입력 중에는 동작하지 않음)</div>
+    <div class="lb-hint">← → 로 넘기기 · Esc 닫기 · 휠/두 손가락/두 번 눌러 확대, 확대 중엔 끌어서 이동 · + − 0 키 (메모 입력 중에는 키가 동작하지 않음)</div>
   </aside>
 </div>
 <div class="drop" id="dropHint" hidden>여기에 사진이나 폴더를 놓으세요</div>
@@ -1677,6 +1702,7 @@ async function openLightbox(pkey) {
   const gm = $("#lbGmaps"); gm.hidden = !hasGps(p); if (hasGps(p)) gm.href = gmapsUrl(p.lat, p.lng);
   $("#lbPrev").disabled = i <= 0; $("#lbNext").disabled = i >= list.length - 1;
   const img = $("#lbImg"); const token = ++lbToken;
+  zoomSet(1, 0, 0);
   img.removeAttribute("src"); $("#lbLoading").hidden = false; $("#lbLoading").textContent = "불러오는 중…";
   const remoteMsg = !p.file && p.originalFileId ? " (드라이브 원본을 불러오지 못함 — 이 기기에서 같은 사진을 다시 추가하면 복구됩니다)" : !p.file ? " (이 기기에 원본이 없습니다 — 같은 사진을 다시 추가하세요)" : "";
   try {
@@ -1699,6 +1725,113 @@ function lbStep(dir) {
   const p = state.byKey.get(state.lb); if (!p) return;
   const list = lbList(p); const i = list.indexOf(p) + dir;
   if (i >= 0 && i < list.length) openLightbox(list[i].key);
+}
+
+/* 크게 보기 확대: 사진(img)에만 translate+scale을 건다. 원점은 사진 가운데(무대 가운데와 같음). */
+const ZOOM_MAX = 6;
+const zoom = { s: 1, x: 0, y: 0 };
+function zoomClamp() {
+  const img = $("#lbImg"), st = $("#lbStage");
+  const w = img.offsetWidth * zoom.s, h = img.offsetHeight * zoom.s;
+  const mx = Math.max(0, (w - st.clientWidth) / 2), my = Math.max(0, (h - st.clientHeight) / 2);
+  zoom.x = Math.min(mx, Math.max(-mx, zoom.x)); zoom.y = Math.min(my, Math.max(-my, zoom.y));
+}
+function zoomSet(s, x, y, anim) {
+  zoom.s = Math.min(ZOOM_MAX, Math.max(1, s)); zoom.x = x; zoom.y = y;
+  if (zoom.s === 1) zoom.x = zoom.y = 0; else zoomClamp();
+  const img = $("#lbImg");
+  img.classList.toggle("anim", !!anim);
+  img.style.transform = zoom.s === 1 ? "" : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})`;
+  $("#lbStage").classList.toggle("zoomed", zoom.s > 1);
+  $("#lbZoomReset").textContent = `${Math.round(zoom.s * 100)}%`;
+  $("#lbZoomOut").disabled = zoom.s <= 1; $("#lbZoomIn").disabled = zoom.s >= ZOOM_MAX;
+}
+// 화면 좌표(cx, cy) 지점이 제자리에 있도록 배율을 s로 바꾼다. 기준이 없으면 무대 가운데.
+function zoomAt(s, cx, cy, anim) {
+  const r = $("#lbStage").getBoundingClientRect();
+  const px = cx == null ? 0 : cx - (r.left + r.width / 2), py = cy == null ? 0 : cy - (r.top + r.height / 2);
+  const ns = Math.min(ZOOM_MAX, Math.max(1, s)), k = ns / zoom.s;
+  zoomSet(ns, px - (px - zoom.x) * k, py - (py - zoom.y) * k, anim);
+}
+function initLightboxZoom() {
+  const st = $("#lbStage");
+  const pts = new Map(); // pointerId → {x, y}
+  let g = null;           // 진행 중인 제스처
+  let lastTap = null;     // 두 번 누르기 감지
+  let suppressUntil = 0;   // 끌기·두 번 누르기 직후의 click 무시
+  const stageCenter = () => { const r = st.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+  const pinchInfo = () => {
+    const [a, b] = [...pts.values()];
+    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  };
+  const startPinch = () => {
+    const p = pinchInfo(), [cx, cy] = stageCenter();
+    g.pinch = { d0: p.d, s0: zoom.s, x0: zoom.x, y0: zoom.y, mx0: p.mx - cx, my0: p.my - cy };
+  };
+  st.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button") || !state.lb) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { st.setPointerCapture(e.pointerId); } catch (_) {}
+    if (pts.size === 1) {
+      // 확대 상태로 시작한 제스처는 이동(pan)만 하고, 넘기기(swipe)로 쓰지 않는다
+      g = { sx: e.clientX, sy: e.clientY, x0: zoom.x, y0: zoom.y, startZoomed: zoom.s > 1, multi: false, moved: false, pinch: null };
+    } else if (pts.size === 2 && g) {
+      g.multi = true; startPinch();
+    }
+  });
+  st.addEventListener("pointermove", (e) => {
+    if (!g || !pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size >= 2 && g.pinch) {
+      const p = pinchInfo(), [cx, cy] = stageCenter(), q = g.pinch;
+      const ns = Math.min(ZOOM_MAX, Math.max(1, q.s0 * p.d / q.d0)), k = ns / q.s0;
+      zoomSet(ns, (p.mx - cx) - (q.mx0 - q.x0) * k, (p.my - cy) - (q.my0 - q.y0) * k);
+      g.moved = true;
+      return;
+    }
+    const dx = e.clientX - g.sx, dy = e.clientY - g.sy;
+    if (!g.moved && Math.hypot(dx, dy) > 8) g.moved = true;
+    if (zoom.s > 1 && g.moved) { st.classList.add("panning"); zoomSet(zoom.s, g.x0 + dx, g.y0 + dy); }
+  });
+  const end = (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.delete(e.pointerId);
+    if (!g) return;
+    if (pts.size === 1) {
+      // 두 손가락 중 하나만 뗌 → 남은 손가락으로 이어서 이동
+      const [r] = [...pts.values()]; g.sx = r.x; g.sy = r.y; g.x0 = zoom.x; g.y0 = zoom.y; g.pinch = null;
+      return;
+    }
+    if (pts.size > 0) return;
+    st.classList.remove("panning");
+    const dx = e.clientX - g.sx, dy = e.clientY - g.sy;
+    if (g.moved) suppressUntil = Date.now() + 400;
+    if (e.type === "pointerup" && e.pointerType !== "mouse" && !g.multi && !g.startZoomed && zoom.s === 1 && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      lbStep(dx < 0 ? 1 : -1);
+    } else if (e.type === "pointerup" && !g.multi && !g.moved && e.target.closest("#lbImg")) {
+      const now = Date.now();
+      if (lastTap && now - lastTap.t < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+        if (zoom.s > 1) zoomSet(1, 0, 0, true); else zoomAt(2.5, e.clientX, e.clientY, true);
+        lastTap = null; suppressUntil = Date.now() + 400;
+      } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+    }
+    if (zoom.s < 1.05) zoomSet(1, 0, 0, true);
+    g = null;
+  };
+  st.addEventListener("pointerup", end);
+  st.addEventListener("pointercancel", end);
+  // 끌어서 이동한 뒤 배경에서 손을 떼도 닫히지 않게
+  st.addEventListener("click", (e) => { if (Date.now() < suppressUntil && !e.target.closest("button")) e.stopPropagation(); }, true);
+  st.addEventListener("wheel", (e) => {
+    if (!state.lb || !$("#lbImg").getAttribute("src")) return;
+    e.preventDefault();
+    zoomAt(zoom.s * Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.002)), e.clientX, e.clientY);
+  }, { passive: false });
+  $("#lbZoomIn").onclick = () => zoomAt(zoom.s * 1.5, null, null, true);
+  $("#lbZoomOut").onclick = () => zoomAt(zoom.s / 1.5, null, null, true);
+  $("#lbZoomReset").onclick = () => zoomSet(1, 0, 0, true);
+  window.addEventListener("resize", () => { if (state.lb) zoomSet(zoom.s, zoom.x, zoom.y); });
 }
 
 /* ---------- demo ---------- */
@@ -1845,20 +1978,19 @@ function bind() {
       map.flyTo([p.lat, p.lng], 18, { duration: 0.6 });
     }
   };
+  $("#lbCloseTop").onclick = closeLightbox;
   $("#lbStage").addEventListener("click", (e) => { if (e.target.id === "lbStage") closeLightbox(); });
-  let tx = null;
-  $("#lbStage").addEventListener("touchstart", (e) => { tx = e.touches[0].clientX; }, { passive: true });
-  $("#lbStage").addEventListener("touchend", (e) => {
-    if (tx == null) return; const dx = e.changedTouches[0].clientX - tx; tx = null;
-    if (Math.abs(dx) > 50) lbStep(dx < 0 ? 1 : -1);
-  });
+  initLightboxZoom(); // 확대·이동·넘기기(스와이프) 제스처
   document.addEventListener("keydown", (e) => {
     if (!state.lb) return;
     const typing = /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
-    if (e.key === "Escape") { if (typing) document.activeElement.blur(); else closeLightbox(); }
+    if (e.key === "Escape") { if (typing) document.activeElement.blur(); else if (zoom.s > 1) zoomSet(1, 0, 0, true); else closeLightbox(); }
     if (typing) return;
     if (e.key === "ArrowLeft") lbStep(-1);
     if (e.key === "ArrowRight") lbStep(1);
+    if (e.key === "+" || e.key === "=") zoomAt(zoom.s * 1.5, null, null, true);
+    if (e.key === "-") zoomAt(zoom.s / 1.5, null, null, true);
+    if (e.key === "0") zoomSet(1, 0, 0, true);
   });
 
   // 메모 파일
